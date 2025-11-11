@@ -349,6 +349,14 @@ def pah_source_add(ds,reg,m,boost):
 
 
     pah_grid_of_sizes = ds.parameters['reg_grid_of_sizes_graphite']*ds.parameters['reg_grid_of_sizes_aromatic_fraction']
+
+    #ignore the calculation for any sizes bigger than PAH traditional sizes to avoid LIR double counting issue (issue #241 on github)
+    sizes = 10.**(np.linspace(cfg.par.otf_extinction_log_min_size,cfg.par.otf_extinction_log_max_size,pah_grid_of_sizes.shape[1])) #micron
+    max_pah_size = 2.e-3 #micron -- using Eq 21 from Narayanan et al. 2023 and assuming PAHs <= 1000 carbon atoms
+    not_pah_bin_indices = np.where(sizes >= max_pah_size)[0]
+    pah_grid_of_sizes[:,not_pah_bin_indices]=1.e-30
+
+    
     #pah_grid_of_sizes = ds.parameters['reg_grid_of_sizes_graphite']
 
 
