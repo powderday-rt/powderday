@@ -18,6 +18,18 @@ def get_whole_ceil(n,near):
     return(nn[nn%1==0][-1])
 
 
+def compute_grid_PAH_luminosity_SPA(cell_list):
+    #THIS IS JUST HOLDER CODE RIGHT NOW FOR THE SPA STUFF FROM HELENA RICHIE'S MODELS.
+    
+    for counter,cell in enumerate(cell_list):
+        print(cell)
+        spectrum_ion, spectrum_neu = ps.generate_spectrum(wavelength_arr=ps.wavelength_u_arr, u_lambda_arr=10*ps.u_lambda_arr, size_dist_neu=ps.size_dist_neu, size_dist_ion=ps.size_dist_ion)
+        
+    
+    grid_PAH_luminosity = neutral_grid_PAH_luminosity + ion_grid_PAH_luminosity
+    return grid_PAH_luminosity,neutral_grid_PAH_luminosity,ion_grid_PAH_luminosity
+
+
 def compute_grid_PAH_luminosity(cell_list,beta_nnls,grid_of_sizes,numgrains,draine_sizes,draine_lam,f_ion,neutral_PAH_reference_objects,ion_PAH_reference_objects,
                                 logU,basis_logU_values, draine_bins_idx):
 
@@ -374,6 +386,8 @@ def pah_source_add(ds,reg,m,boost):
                                        basis_logU_values = basis_logU_values,
                                        draine_bins_idx = draine_bins_idx)
 
+
+    
     
     '''
 

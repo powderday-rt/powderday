@@ -108,20 +108,17 @@ def get_Cabs(draine_directories,simulation_sizes,gsd):
     return Cabs_cation_regrid_lam_cells,Cabs_neutral_regrid_lam_cells
 
 
-
-def get_beta_nnls(draine_directories, gsd, simulation_sizes, reg):
-
-    #get the wavelengths of the simulation 
+def get_isrf(gsd,reg):
+    #get the wavelengths of the simulation
     f = h5py.File(cfg.model.outputfile + '_isrf.sed')
-
-    #thiis gives us the list of iterations in the initial ISRF calculation.  
+    
+    #thiis gives us the list of iterations in the initial ISRF calculation.
     iteration_list = [i for i in f.keys() if 'iteration_' in i]
     dset = f[iteration_list[-1]]
     simulation_isrf_nu = dset['ISRF_frequency_bins'][:] * u.Hz
     simulation_isrf_lam = (const.c/simulation_isrf_nu).to(u.micron)
 
-
-    simulation_specific_energy_sum = dset['specific_energy_nu']*u.erg/u.s/u.g #is [n_nu, n_dust, n_cells] big  
+    simulation_specific_energy_sum = dset['specific_energy_nu']*u.erg/u.s/u.g #is [n_nu, n_dust, n_cells] big
 
     #get the simulation_isrf in units of erg/s
     grid_dust_masses = reg['dust','mass'].in_units('g').to_astropy() #getting the dust masses out of yt units and into astropy units
@@ -130,14 +127,12 @@ def get_beta_nnls(draine_directories, gsd, simulation_sizes, reg):
     #clip values that are MC noise too high
     simulation_specific_energy_sum[simulation_specific_energy_sum.value > 1.e50] = np.median(simulation_specific_energy_sum)
 
-
     ncells = grid_dust_masses.shape[0]
-        
+
     #convolve the simulation specific energy (ISRF) with the GSD to
     #get rid of the size dimension:
     simulation_specific_energy_gsd_convolved = np.zeros([simulation_specific_energy_sum.shape[0],simulation_specific_energy_sum.shape[2]])
 
-    
     print("[isrf_decompose/get_beta_nnls]: Convolving the simulation specific energy grid with the dust types")
     for i in tqdm(range(ncells)):
         #x = simulation_specific_energy_sum[:,:,i]
@@ -145,6 +140,12 @@ def get_beta_nnls(draine_directories, gsd, simulation_sizes, reg):
         simulation_specific_energy_gsd_convolved[:,i]/=np.sum(gsd[i,:])
 
     simulation_specific_energy_gsd_convolved *= u.erg/u.s #attach units back to it
+
+    return simulation_specific_energy_gsd_convolved,simulation_isrf_nu,simulation_isrf_lam
+
+def get_beta_nnls(draine_directories, gsd, simulation_sizes, reg):
+
+    simulation_specific_energy_gsd_convolved,simulation_isrf_nu,simulation_isrf_lam = get_isrf(gsd,reg)
     
     #we have read in the draine directories explicitly to ensure that the ordering of them is identical from pah_source_create
     isrf_files = []
@@ -192,9 +193,9 @@ def get_beta_nnls(draine_directories, gsd, simulation_sizes, reg):
     #vectors to the local ISRF.  the normalization will get set later by
     #the grain size distribution anyways.
 
-    basis_isrf_vectors *= const.c/(4.*np.pi)  #erg/s/cm**2/Hz
+    basis_isrf_vectors *= const.c/(4.*np.pi)  #erg/s/cm**2
     basis_isrf_vectors = basis_isrf_vectors.to(u.erg/u.s/u.cm**2)
-    basis_isrf_vectors *= 1*u.cm**2 #erg/s/Hz
+    basis_isrf_vectors *= 1*u.cm**2 #erg/s
     
 
     #4 now resample the hyperion ISRF to the wavelengths of the Draine
@@ -212,8 +213,8 @@ def get_beta_nnls(draine_directories, gsd, simulation_sizes, reg):
 
 
     
-    
-    
+    #redefining this here -- the original definition is in get_isrf() though this is functionally equivalent
+    ncells = reg['dust','mass'].in_units('g').to_astropy().shape[0]
     simulation_sizes = np.broadcast_to(simulation_sizes,(ncells,simulation_sizes.shape[0]))*u.micron
     gsd = gsd.value
     
@@ -244,8 +245,8 @@ def get_beta_nnls(draine_directories, gsd, simulation_sizes, reg):
     beta_nnls = np.zeros([basis_isrf_vectors.shape[0],simulation_specific_energy_sum_regrid.shape[1]])
     ncells = simulation_specific_energy_sum_regrid.shape[1]
 
-
-
+    np.savez(cfg.model.PD_output_dir+'isrf.npz',lam = draine_lam.to(u.micron).value,isrf = np.sum(simulation_specific_energy_sum_regrid,axis=1).value,basis_isrf_vectors=basis_isrf_vectors.value)
+    
     x = basis_isrf_vectors
     y = simulation_specific_energy_sum_regrid
 
@@ -271,7 +272,6 @@ def get_logU(cell_isrf,Cabs_cation,Cabs_neutral,draine_lam,reg):
     #get the cell sizes since ISRF is not per cm^2 (and it needs to be
     #so that we can convert to erg/cm^3)
 
-    
     #for some reason the units attached in reg.parameters needs to be reattached for it to carry through in the upcoming arithmetic
     cell_sizes = reg.parameters['cell_size'].value*u.cm
 
@@ -280,10 +280,10 @@ def get_logU(cell_isrf,Cabs_cation,Cabs_neutral,draine_lam,reg):
     
 
     #get into erg/cm^3 
-    cell_isrf /=const.c
+    cell_isrf /=const.c*4*np.pi #from: energy density = 4pi/c J_nu
     cell_isrf = cell_isrf.to(u.erg/u.cm**3)
 
-    h_ref = 1.958e-12*u.erg/u.s
+    h_ref = 1.958e-12*u.erg/u.s #eq 2 from Draine et al.
     draine_nu = (const.c/draine_lam).to(u.Hz)
 
 
@@ -303,7 +303,7 @@ def get_logU(cell_isrf,Cabs_cation,Cabs_neutral,draine_lam,reg):
 
     y = cell_isrf * const.c*Cabs_neutral/h_ref
     U= (np.trapz(y,draine_nu[::-1],axis=0)).decompose()
-    
+
     #DEBUG DEBUG DEBUG
     '''
     import matplotlib.pyplot as plt
@@ -313,9 +313,10 @@ def get_logU(cell_isrf,Cabs_cation,Cabs_neutral,draine_lam,reg):
     ax.set_yscale('log')
     fig.savefig('hist_logu.png',dpi=300)
     '''
-    
+
     #just to make any numerical isseues with U<~0 not impact our logU calc
     U[U<=0] = 1.e-10
+    U[U>=1e4] = 1.e4
     logU = np.log10(U)
 
     
