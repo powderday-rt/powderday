@@ -6,29 +6,56 @@ from astropy import constants as constants
 import powderday.config as cfg
 import pdb
 from tqdm import tqdm
-from powderday.pah.isrf_decompose import get_beta_nnls
+from powderday.pah.isrf_decompose import get_beta_nnls,get_isrf
 import os,glob
 from multiprocessing import Pool
 from functools import partial
 from datetime import datetime
 from unyt import unyt_quantity,unyt_array
+import pah_spec  # import Helena Richie's pah_spec model for SPA calculations
+
 
 def get_whole_ceil(n,near):
     nn = np.divide(n,np.linspace(1,np.ceil(n/near),int(np.ceil(n/near))))
     return(nn[nn%1==0][-1])
 
 
-def compute_grid_PAH_luminosity_SPA(cell_list):
-    #THIS IS JUST HOLDER CODE RIGHT NOW FOR THE SPA STUFF FROM HELENA RICHIE'S MODELS.
+def compute_grid_PAH_luminosity_SPA(cell_list,gsd,reg):
+    #gsd is grid_of_sizes in this code
     
+    
+
+    #get the ISRF
+    simulation_specific_energy_gsd_convolved,simulation_isrf_nu,simulation_isrf_lam = get_isrf(gsd,reg)
+
+    cell_isrf = simulation_specific_energy_gsd_convolved.cgs.T
+    cell_sizes = reg.parameters['cell_size'].value*u.cm
+    cell_isrf = (cell_isrf.T/(cell_sizes**2.))
+    #get into erg/cm^3
+    cell_isrf /=constants.c*4*np.pi #from: energy density = 4pi/c J_nu
+    cell_isrf = cell_isrf.to(u.erg/u.cm**3)
+    cell_isrf_ergcm4 = cell_isrf.T/simulation_isrf_lam.to(u.cm)
+
+
+    ps = pah_spec.PahSpec()
     for counter,cell in enumerate(cell_list):
         print(cell)
-        spectrum_ion, spectrum_neu = ps.generate_spectrum(wavelength_arr=ps.wavelength_u_arr, u_lambda_arr=10*ps.u_lambda_arr, size_dist_neu=ps.size_dist_neu, size_dist_ion=ps.size_dist_ion)
-        
-    
-    grid_PAH_luminosity = neutral_grid_PAH_luminosity + ion_grid_PAH_luminosity
-    return grid_PAH_luminosity,neutral_grid_PAH_luminosity,ion_grid_PAH_luminosity
 
+        #DEBUG: these cell_sizes need to correspond to the actual GSD for ions and neutrals so this probably needs to be read into the function
+        cell_size_dist_neu = gsd[counter,:][0:3] #DEBUG - this is just assuming the first 3 are PAHs which is hardcoded into pah_spec - needs to be fixed both in pah_spec and here
+        cell_size_dist_ion = gsd[counter,:][0:3] #DEBUG - this is just assuming the first 3 are PAHs which is hardcoded into pah_spec - needs to be fixed both in pah_spec and here
+        isrf_lam = simulation_isrf_lam.to(u.micron)[::-1] #pah_spec naturally expects this to be in ascending order
+        cell_isrf = cell_isrf_ergcm4[counter,:][::-1] #also putting in ascending order
+        
+
+        
+
+        #spectrum_ion, spectrum_neu = ps.generate_spectrum(wavelength_arr=ps.wavelength_u_arr, u_lambda_arr=10*ps.u_lambda_arr, size_dist_neu=ps.size_dist_neu, size_dist_ion=ps.size_dist_ion)
+        spectrum_neu,spectrum_ion = ps.generate_spectrum(wavelength_arr = isrf_lam, u_lambda_arr = cell_isrf, size_dist_neu = cell_size_dist_neu, size_dist_ion = cell_size_dist_ion)
+
+    #grid_PAH_luminosity = neutral_grid_PAH_luminosity + ion_grid_PAH_luminosity
+    #return grid_PAH_luminosity,neutral_grid_PAH_luminosity,ion_grid_PAH_luminosity
+    return None
 
 def compute_grid_PAH_luminosity(cell_list,beta_nnls,grid_of_sizes,numgrains,draine_sizes,draine_lam,f_ion,neutral_PAH_reference_objects,ion_PAH_reference_objects,
                                 logU,basis_logU_values, draine_bins_idx):
@@ -386,8 +413,8 @@ def pah_source_add(ds,reg,m,boost):
                                        basis_logU_values = basis_logU_values,
                                        draine_bins_idx = draine_bins_idx)
 
-
     
+    grid_PAH_luminosity,neutral_grid_PAH_luminosity,ion_grid_PAH_luminosity = compute_grid_PAH_luminosity_SPA(cell_list,grid_of_sizes,reg)
     
     '''
 
