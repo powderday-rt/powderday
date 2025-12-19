@@ -1,3 +1,7 @@
+#DEBUG NEED TO NOT JUST USE 0TH 3 INDICES AS BELOW, BUT NEED TO MAKE THIS DYNAMIC BOTH HERE AND IN PAH_SPEC
+
+
+
 import numpy as np
 from powderday.pah.pah_file_read import read_draine_file
 from powderday.helpers import find_nearest
@@ -8,54 +12,251 @@ import pdb
 from tqdm import tqdm
 from powderday.pah.isrf_decompose import get_beta_nnls,get_isrf
 import os,glob
-from multiprocessing import Pool
+import multiprocessing as mp
 from functools import partial
 from datetime import datetime
 from unyt import unyt_quantity,unyt_array
 import pah_spec  # import Helena Richie's pah_spec model for SPA calculations
+from powderday.pah.isrf_decompose import get_Cabs,get_logU
+from scipy.interpolate import interp1d
 
+#This global variable will hold the model inside each worker process
+_worker_ps_model = None
 
 def get_whole_ceil(n,near):
     nn = np.divide(n,np.linspace(1,np.ceil(n/near),int(np.ceil(n/near))))
     return(nn[nn%1==0][-1])
 
 
-def compute_grid_PAH_luminosity_SPA(cell_list,gsd,reg):
-    #gsd is grid_of_sizes in this code
-    
-    
 
-    #get the ISRF
-    simulation_specific_energy_gsd_convolved,simulation_isrf_nu,simulation_isrf_lam = get_isrf(gsd,reg)
+
+#SERIES OF FUNCTIONS FOR PARALLEL PROCESSING THE SPA CALCULATIONS
+
+#Fuunction designed to run once per CPU core when the pool starts to call pah_spec
+import numpy as np
+import multiprocessing as mp
+from astropy import constants
+from astropy import units as u
+import pah_spec
+
+# Global variable for the worker process
+_worker_ps_model = None
+
+def _init_worker():
+    """
+    Initialize the pah_spec model once per core to avoid reloading 
+    it for every single cell.
+    """
+    global _worker_ps_model
+    _worker_ps_model = pah_spec.PahSpec()
+
+def _process_cell_task(args):
+    """
+    Worker process that replicates the exact math of the simplified serial code.
+    """
+    # Unpack arguments (all in raw values/floats for speed, except wavelength arrays)
+    (wav_input,             # array: isrf_lam (microns)
+     u_lambda_input,        # array: cell_isrf_this (erg/cm^4)
+     gsd_vals,              # array: raw counts for the 3 bins
+     sim_sizes_val,         # array: simulation sizes in cm
+     n_H_val,               # float: n_H in cm^-3
+     cell_vol_val,          # float: cell volume in cm^3
+     f_ion_vals) = args     # array: f_ion fraction
+    
+    # 1. Calculate Distributions
+    # Matches Serial: gsd / (n_H * vol) / size * fraction
+    
+    # Common denominator: (n_H * vol * size)
+    # Note: sim_sizes_val should be in cm to match serial logic if n_H/vol are cgs
+    denom = (n_H_val * cell_vol_val) * sim_sizes_val
+    
+    cell_size_dist_neu = (gsd_vals / denom) * (1.0 - f_ion_vals)
+    cell_size_dist_ion = (gsd_vals / denom) * f_ion_vals
+
+    # 2. Generate Spectrum
+    # spectrum output is power per wavelength density [erg / (cm * s)]
+    spec_neu, spec_ion = _worker_ps_model.generate_spectrum(
+        wavelength_arr=wav_input, 
+        u_lambda_arr=u_lambda_input, 
+        size_dist_neu=cell_size_dist_neu, 
+        size_dist_ion=cell_size_dist_ion
+    )
+    
+    # 3. Scale back by (n_H * vol)
+    # Matches Serial: spectrum * (n_H * vol)
+    # Returns total luminosity per wavelength [erg / (cm * s)]
+    
+    lum_neu = spec_neu.value * (n_H_val * cell_vol_val)
+    lum_ion = spec_ion.value * (n_H_val * cell_vol_val)
+    
+    return lum_neu, lum_ion
+
+def compute_grid_PAH_luminosity_SPA_parallel(cell_list, gsd, reg, simulation_sizes, ds, draine_directories, f_ion):
+    """
+    Parallel version of the simplified SPA calculation.
+    """
+    from powderday.pah.isrf_decompose import get_isrf
+    
+    simulation_specific_energy_gsd_convolved, simulation_isrf_nu, simulation_isrf_lam = get_isrf(gsd, reg)
 
     cell_isrf = simulation_specific_energy_gsd_convolved.cgs.T
-    cell_sizes = reg.parameters['cell_size'].value*u.cm
-    cell_isrf = (cell_isrf.T/(cell_sizes**2.))
-    #get into erg/cm^3
-    cell_isrf /=constants.c*4*np.pi #from: energy density = 4pi/c J_nu
-    cell_isrf = cell_isrf.to(u.erg/u.cm**3)
-    cell_isrf_ergcm4 = cell_isrf.T/simulation_isrf_lam.to(u.cm)
+    cell_sizes = reg.parameters['cell_size'].value * u.cm
+    
+    # Convert to energy density
+    cell_isrf = (cell_isrf.T / (cell_sizes**2.))
+    cell_isrf /= constants.c * 4 * np.pi 
+    cell_isrf = cell_isrf.to(u.erg / u.cm**3)
+    
+    # (n_cells, n_wav)
+    cell_isrf_ergcm4 = cell_isrf.T / simulation_isrf_lam.to(u.cm)
+
+    # 2. CALCULATE DENSITY (Identical to Serial)
+    n_H = ds.arr(reg['PartType3', 'Dust_GasDensity'], 'code_mass/code_length**3').in_units('g/cm**3').value * u.g / u.cm**3
+    n_H /= constants.m_p
+    n_H = n_H.to(u.cm**-3)
+
+    n_cells = len(cell_list)
+    
+    # Instantiate temp model for dimensions
+    temp_ps = pah_spec.PahSpec() 
+    n_out_wav = len(temp_ps.emission_wavelengths)
+    
+    # Flip wavelengths once (ascending order for pah_spec)
+    wav_input = simulation_isrf_lam.to(u.micron)[::-1]
+    
+    # Prepare inputs that are constant across cells
+    # Use .value to strip units for faster pickling
+    sim_sizes_val = simulation_sizes[0:3].value 
+    f_ion_sliced = f_ion[0:3].value
+    
+    # 4. PREPARE TASK LIST
+    print(f"[SPA Parallel] Calculating PAH spectra for {n_cells} cells...")
+    tasks = []
+    
+    for i in range(n_cells):
+        
+        # Specific inputs for this cell
+        cell_vol_val = cell_sizes[i].value**3
+        n_H_val = n_H[i].value
+        
+        # Flip ISRF to match wavelength order
+        u_lambda_input = cell_isrf_ergcm4[i, :][::-1]
+        
+        # Raw GSD counts for 3 PAH bins
+        gsd_vals = gsd[i, :][0:3].value 
+
+        task_tuple = (
+            wav_input,
+            u_lambda_input,
+            gsd_vals,
+            sim_sizes_val,
+            n_H_val,
+            cell_vol_val,
+            f_ion_sliced
+        )
+        tasks.append(task_tuple)
+
+    # 5. RUN PARALLEL POOL
+    with mp.Pool(initializer=_init_worker) as pool:
+        results = pool.map(_process_cell_task, tasks)
+
+    # 6. UNPACK RESULTS
+    neutral_grid_PAH_luminosity = np.zeros((n_cells, n_out_wav))
+    ion_grid_PAH_luminosity = np.zeros((n_cells, n_out_wav))
+
+    for i, (res_neu, res_ion) in enumerate(results):
+        neutral_grid_PAH_luminosity[i, :] = res_neu
+        ion_grid_PAH_luminosity[i, :] = res_ion
+
+    # 7. APPLY UNITS AND WAVELENGTH SCALING    
+    # Currently [erg / (cm * s)]. Add units back.
+    neutral_grid_PAH_luminosity = neutral_grid_PAH_luminosity * u.erg / (u.cm * u.s)
+    ion_grid_PAH_luminosity = ion_grid_PAH_luminosity * u.erg / (u.cm * u.s)
+    
+    # Multiply by wavelength [cm] to get Power [erg/s]
+    neutral_grid_PAH_luminosity = neutral_grid_PAH_luminosity * temp_ps.emission_wavelengths.to(u.cm)
+    ion_grid_PAH_luminosity = ion_grid_PAH_luminosity * temp_ps.emission_wavelengths.to(u.cm)
+    
+    grid_PAH_luminosity = neutral_grid_PAH_luminosity + ion_grid_PAH_luminosity
+
+    return grid_PAH_luminosity, neutral_grid_PAH_luminosity, ion_grid_PAH_luminosity
 
 
+
+
+def compute_grid_PAH_luminosity_SPA_serial(cell_list, gsd, reg, simulation_sizes, ds, draine_directories, f_ion):
+    """
+    Compute PAH luminosity using the Single Photon Approximation (Richie & Hensley 2025).
+    """
+    
+    from astropy import constants
+    import pah_spec
+    
+    # Get the ISRF for all cells
+    simulation_specific_energy_gsd_convolved, simulation_isrf_nu, simulation_isrf_lam = get_isrf(gsd, reg)
+
+    cell_isrf = simulation_specific_energy_gsd_convolved.cgs.T
+    cell_sizes = reg.parameters['cell_size'].value * u.cm
+    
+    # Convert to energy density
+    cell_isrf = (cell_isrf.T / (cell_sizes**2.))
+    cell_isrf /= constants.c * 4 * np.pi
+    cell_isrf = cell_isrf.to(u.erg / u.cm**3)
+    cell_isrf_ergcm4 = cell_isrf.T / simulation_isrf_lam.to(u.cm)
+
+    # Initialize pah_spec
     ps = pah_spec.PahSpec()
-    for counter,cell in enumerate(cell_list):
-        print(cell)
 
-        #DEBUG: these cell_sizes need to correspond to the actual GSD for ions and neutrals so this probably needs to be read into the function
-        cell_size_dist_neu = gsd[counter,:][0:3] #DEBUG - this is just assuming the first 3 are PAHs which is hardcoded into pah_spec - needs to be fixed both in pah_spec and here
-        cell_size_dist_ion = gsd[counter,:][0:3] #DEBUG - this is just assuming the first 3 are PAHs which is hardcoded into pah_spec - needs to be fixed both in pah_spec and here
-        isrf_lam = simulation_isrf_lam.to(u.micron)[::-1] #pah_spec naturally expects this to be in ascending order
-        cell_isrf = cell_isrf_ergcm4[counter,:][::-1] #also putting in ascending order
+    n_cells = len(cell_list)
+    n_output_wav = len(ps.emission_wavelengths)
+    
+    # Pre-allocate output grids
+    neutral_grid_PAH_luminosity = np.zeros((n_cells, n_output_wav)) * u.erg / (u.cm * u.s)
+    ion_grid_PAH_luminosity = np.zeros((n_cells, n_output_wav)) * u.erg / (u.cm * u.s)
+
+    # Calculate n_H
+    n_H = ds.arr(reg['PartType3', 'Dust_GasDensity'], 'code_mass/code_length**3').in_units('g/cm**3').value * u.g / u.cm**3
+    n_H /= constants.m_p
+    n_H = n_H.to(u.cm**-3)
+
+    print(f"[SPA] Using 3 PAH size bins from pah_spec")
+    print(f"[SPA] pah_spec grain sizes: {pah_spec.GRAIN_SIZES.to(u.angstrom)}")
+    print(f"[SPA] Simulation sizes (first 3): {simulation_sizes[0:3].to(u.angstrom)}")
+
+    for counter, cell in enumerate(cell_list):
+        if counter % 100 == 0:
+            print(f"[SPA] Processing cell {counter}/{n_cells}")
+
+        # Get the ISRF for this cell (ascending wavelength order for pah_spec)
+        isrf_lam = simulation_isrf_lam.to(u.micron)[::-1]
+        cell_isrf_this = cell_isrf_ergcm4[counter, :][::-1]
+
+        # Original normalization approach - divide by (n_H * volume * size)
+        # This converts grain counts to something like dn/da per H per volume
+        cell_size_dist_neu = gsd[counter, :][0:3].value / (n_H[counter].value * cell_sizes[counter].value**3) / simulation_sizes[0:3].value * (1. - f_ion[0:3].value)
+        cell_size_dist_ion = gsd[counter, :][0:3].value / (n_H[counter].value * cell_sizes[counter].value**3) / simulation_sizes[0:3].value * f_ion[0:3].value
+
+        # Generate the spectrum using pah_spec
+        spectrum_neu, spectrum_ion = ps.generate_spectrum(
+            wavelength_arr=isrf_lam,
+            u_lambda_arr=cell_isrf_this,
+            size_dist_neu=cell_size_dist_neu,
+            size_dist_ion=cell_size_dist_ion
+        )
         
+        # Scale back by (n_H * volume) to get total luminosity per wavelength
+        neutral_grid_PAH_luminosity[counter, :] = spectrum_neu * (n_H[counter].value * cell_sizes[counter].value**3)
+        ion_grid_PAH_luminosity[counter, :] = spectrum_ion * (n_H[counter].value * cell_sizes[counter].value**3)
 
-        
+    # Convert from power per wavelength [erg/(cm*s)] to power [erg/s]
+    neutral_grid_PAH_luminosity = neutral_grid_PAH_luminosity * ps.emission_wavelengths.to(u.cm)
+    ion_grid_PAH_luminosity = ion_grid_PAH_luminosity * ps.emission_wavelengths.to(u.cm)
 
-        #spectrum_ion, spectrum_neu = ps.generate_spectrum(wavelength_arr=ps.wavelength_u_arr, u_lambda_arr=10*ps.u_lambda_arr, size_dist_neu=ps.size_dist_neu, size_dist_ion=ps.size_dist_ion)
-        spectrum_neu,spectrum_ion = ps.generate_spectrum(wavelength_arr = isrf_lam, u_lambda_arr = cell_isrf, size_dist_neu = cell_size_dist_neu, size_dist_ion = cell_size_dist_ion)
+    grid_PAH_luminosity = neutral_grid_PAH_luminosity + ion_grid_PAH_luminosity
 
-    #grid_PAH_luminosity = neutral_grid_PAH_luminosity + ion_grid_PAH_luminosity
-    #return grid_PAH_luminosity,neutral_grid_PAH_luminosity,ion_grid_PAH_luminosity
-    return None
+    return grid_PAH_luminosity, neutral_grid_PAH_luminosity, ion_grid_PAH_luminosity
+
+
 
 def compute_grid_PAH_luminosity(cell_list,beta_nnls,grid_of_sizes,numgrains,draine_sizes,draine_lam,f_ion,neutral_PAH_reference_objects,ion_PAH_reference_objects,
                                 logU,basis_logU_values, draine_bins_idx):
@@ -378,7 +579,7 @@ def pah_source_add(ds,reg,m,boost):
 
     
     print("Computing the PAH luminosities for every cell given its grain size distribution and logU. Entering Pool.map multiprocessing.")
-    p = Pool(processes = nprocesses)
+    p = mp.Pool(processes = nprocesses)
     dum_numgrains = reg['particle_dust','numgrains'].value 
 
 
@@ -399,23 +600,52 @@ def pah_source_add(ds,reg,m,boost):
     #pah_grid_of_sizes = ds.parameters['reg_grid_of_sizes_graphite']
 
 
+    if cfg.par.PAH_SPA == False:
+        dum  = compute_grid_PAH_luminosity(cell_list,
+                                           beta_nnls = beta_nnls,
+                                           grid_of_sizes = pah_grid_of_sizes.value,
+                                           numgrains = dum_numgrains,
+                                           draine_sizes = draine_sizes,
+                                           draine_lam = draine_lam.value,
+                                           f_ion=f_ion,
+                                           neutral_PAH_reference_objects = neutral_PAH_reference_objects,
+                                           ion_PAH_reference_objects = ion_PAH_reference_objects,
+                                           logU = logU,
+                                           basis_logU_values = basis_logU_values,
+                                           draine_bins_idx = draine_bins_idx)
+        
 
-    dum  = compute_grid_PAH_luminosity(cell_list,
-                                       beta_nnls = beta_nnls,
-                                       grid_of_sizes = pah_grid_of_sizes.value,
-                                       numgrains = dum_numgrains,
-                                       draine_sizes = draine_sizes,
-                                       draine_lam = draine_lam.value,
-                                       f_ion=f_ion,
-                                       neutral_PAH_reference_objects = neutral_PAH_reference_objects,
-                                       ion_PAH_reference_objects = ion_PAH_reference_objects,
-                                       logU = logU,
-                                       basis_logU_values = basis_logU_values,
-                                       draine_bins_idx = draine_bins_idx)
+        grid_PAH_luminosity = dum[0]*u.erg/u.s
+        grid_neutral_PAH_luminosity = dum[1]*u.erg/u.s
+        grid_ion_PAH_luminosity = dum[2]*u.erg/u.s
 
-    
-    grid_PAH_luminosity,neutral_grid_PAH_luminosity,ion_grid_PAH_luminosity = compute_grid_PAH_luminosity_SPA(cell_list,grid_of_sizes,reg)
-    
+        pah_lam = draine_lam
+
+    else:
+
+        
+        grid_PAH_luminosity, grid_neutral_PAH_luminosity, grid_ion_PAH_luminosity = compute_grid_PAH_luminosity_SPA_parallel(
+            cell_list, 
+            grid_of_sizes, 
+            reg, 
+            simulation_sizes, 
+            ds, 
+            draine_directories, 
+            f_ion
+        )
+        
+        #grid_PAH_luminosity, grid_neutral_PAH_luminosity,grid_ion_PAH_luminosity = compute_grid_PAH_luminosity_SPA_serial(cell_list,grid_of_sizes,reg,simulation_sizes,ds,draine_directories,f_ion)
+        import pdb
+        pdb.set_trace()
+        #get the units of wavelength back out - get the emission wavelengths
+        temp_ps = pah_spec.PahSpec()
+        SPA_emission_wavelengths = temp_ps.emission_wavelengths
+        #grid_PAH_luminosity *= SPA_emission_wavelengths.to(u.cm)
+        #grid_neutral_PAH_luminosity *= SPA_emission_wavelengths.to(u.cm)
+        #grid_ion_PAH_luminosity *= SPA_emission_wavelengths.to(u.cm)
+
+        pah_lam = SPA_emission_wavelengths.to(u.micron)
+
     '''
 
 #THIS COMMENTED BLOCK IS FOR DOING THE PAH LUMINOSITY COMPUTATIONS IN
@@ -456,21 +686,15 @@ TESTING IT MAY BE WORTH RE-INTRODUCING.
 
     '''
 
-    grid_PAH_luminosity = dum[0]
-    grid_neutral_PAH_luminosity = dum[1]
-    grid_ion_PAH_luminosity = dum[2]
-
-    
     t2 = datetime.now()
     print ('Execution time for PAH dot producting [is that a word?] across the grid = '+str(t2-t1))
 
 
- 
     grid_PAH_luminosity[np.isnan(grid_PAH_luminosity)] = 0
     grid_neutral_PAH_luminosity[np.isnan(grid_neutral_PAH_luminosity)] = 0
     grid_ion_PAH_luminosity[np.isnan(grid_ion_PAH_luminosity)] = 0
 
-    nu = (constants.c/draine_lam).to(u.Hz)
+    nu = (constants.c/pah_lam).to(u.Hz)
     #the units here are Lsun/Hz - this is to be consistent with our
     #stellar fnu addition later. The SEDs of individiual sources all
     #end up getting renormalized by the luminosity, so the exact units
@@ -478,7 +702,7 @@ TESTING IT MAY BE WORTH RE-INTRODUCING.
     #(and types of sources) being added to the grid.
 
 
-    fnu = np.divide((grid_PAH_luminosity*u.erg/u.s).to(u.Lsun).value,nu.to(u.Hz).value)
+    fnu = np.divide((grid_PAH_luminosity).to(u.Lsun).value,nu.to(u.Hz).value)
 
     #Because the Draine templates include re-emission, but we want to
     #add the PAHs as sources only, we restrict to the PAH range.
@@ -504,13 +728,16 @@ TESTING IT MAY BE WORTH RE-INTRODUCING.
     #total luminosity).  
  
     only_important_PAH_idx = get_PAH_lum_cdf(nu_reverse,fnu,wpah_nu_reverse,grid_PAH_luminosity)
+
     
     for i in only_important_PAH_idx:#range(grid_PAH_luminosity.shape[0]): #np.arange(2500)
 
         fnu_reverse = fnu[i,:][::-1]
 
-        lum = (np.absolute(np.trapz(nu_reverse[wpah_nu_reverse].cgs.value,fnu_reverse[wpah_nu_reverse])).item()*u.Lsun).to(u.erg/u.s).value
 
+
+        lum = (np.absolute(np.trapz(nu_reverse[wpah_nu_reverse].cgs.value,fnu_reverse[wpah_nu_reverse])).item()*u.Lsun).to(u.erg/u.s).value
+        print(lum)
 
         if lum <= LUM_FLOOR: lum = LUM_FLOOR #just a jamky variable
                                             #defined at the top of
@@ -519,6 +746,8 @@ TESTING IT MAY BE WORTH RE-INTRODUCING.
                                             #we don't add PAH cells
                                             #with 0 luminosity
         #reversing arrays to make nu increasing, and therefore correct for hyperion addition
+
+        print(lum)
         
         m.add_point_source(luminosity=lum,spectrum=(nu_reverse[wpah_nu_reverse].value,fnu_reverse[wpah_nu_reverse]),position=reg.parameters['cell_position'][i,:].in_units('cm').value-boost)
 
@@ -529,7 +758,7 @@ TESTING IT MAY BE WORTH RE-INTRODUCING.
         reg.parameters['grid_neutral_PAH_luminosity'] = grid_neutral_PAH_luminosity
         reg.parameters['grid_ion_PAH_luminosity'] = grid_ion_PAH_luminosity
 
-    reg.parameters['PAH_lam'] = draine_lam.value
+    reg.parameters['PAH_lam'] = pah_lam.value
 
     total_PAH_luminosity =np.sum(grid_PAH_luminosity,axis=0)
     total_neutral_PAH_luminosity = np.sum(grid_neutral_PAH_luminosity,axis=0)
@@ -543,10 +772,10 @@ TESTING IT MAY BE WORTH RE-INTRODUCING.
 
 
 
-    grid_PAH_L_lam = grid_PAH_luminosity/draine_lam.value
-    integrated_grid_PAH_luminosity = np.trapz((grid_PAH_luminosity/draine_lam.value),draine_lam.value,axis=1)
-    integrated_grid_neutral_PAH_luminosity = np.trapz((grid_neutral_PAH_luminosity/draine_lam.value),draine_lam.value,axis=1)
-    integrated_grid_ion_PAH_luminosity = np.trapz((grid_ion_PAH_luminosity/draine_lam.value),draine_lam.value,axis=1)
+    grid_PAH_L_lam = grid_PAH_luminosity/pah_lam
+    integrated_grid_PAH_luminosity = np.trapz((grid_PAH_luminosity/pah_lam.value),pah_lam.value,axis=1)
+    integrated_grid_neutral_PAH_luminosity = np.trapz((grid_neutral_PAH_luminosity/pah_lam.value),pah_lam.value,axis=1)
+    integrated_grid_ion_PAH_luminosity = np.trapz((grid_ion_PAH_luminosity/pah_lam.value),pah_lam.value,axis=1)
 
     reg.parameters['integrated_grid_PAH_luminosity'] = integrated_grid_PAH_luminosity
     reg.parameters['integrated_grid_neutral_PAH_luminosity'] = integrated_grid_neutral_PAH_luminosity

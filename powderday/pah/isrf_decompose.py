@@ -12,100 +12,67 @@ def find_nearest(array, value):
     array = np.asarray(array)
     idx = (np.abs(array - value)).argmin()
 
-def get_Cabs(draine_directories,simulation_sizes,gsd):
+
+def get_Cabs(draine_directories, simulation_sizes, gsd, target_lam):
+    # target_lam: The wavelength array you want Cabs to be on (e.g., pah_lam/simulation_isrf_lam)
     
     ncells = simulation_sizes.shape[0]
     n_simulation_sizes = simulation_sizes.shape[1]
 
+    #read in files
     for file in os.listdir(draine_directories[0]):
         if file.startswith("iout_graD") and file.endswith("_0.00") and "ib" in file: Cabsfile_cation = draine_directories[0]+'/'+file
         if file.startswith("iout_graD") and file.endswith("_0.00") and "nb" in file: Cabsfile_neutral = draine_directories[0]+'/'+file
     PAH_list_cation = read_draine_file(Cabsfile_cation)    
     PAH_list_neutral = read_draine_file(Cabsfile_neutral)
  
-   #i'm sure there's some awesome pythonic cool kids way to code this.
-    #but i'm an IDL coder at heart.
     Cabs_cation = np.zeros([len(PAH_list_cation[0].size_list),len(PAH_list_cation[0].lam)])
     for i in range(len(PAH_list_cation)):
-        #this works bc PAH_list is an n_sizes long list of PAH objects
         Cabs_cation[i,:] = PAH_list_cation[i].cabs
 
     Cabs_neutral = np.zeros([len(PAH_list_neutral[0].size_list),len(PAH_list_neutral[0].lam)])
     for i in range(len(PAH_list_neutral)):
-        #this works bc PAH_list is an n_sizes long list of PAH objects
         Cabs_neutral[i,:] = PAH_list_neutral[i].cabs
-
         
-    #We now have Cabs (for neutrals and cations) in terms of (size,nu),
-    #and we want to get these in terms of just (nu). To do this, we need
-    #to regrid (i.e. downsample) the first dimension so that the GSD is at
-    #the same sizes as the simulation that was run.  Then we can just
-    #multiply Cabs(size_regridded,nu) by dN, where dN is the number of
-    #grains at a given size.
-    
-    # we can just take the very first size of the the cation PAH_list - they should all be the same.
+    # Validating units for Draine files
     draine_sizes = PAH_list_cation[0].size_list*u.cm
-    simulation_sizes = simulation_sizes.to(u.cm)
     draine_lam = PAH_list_cation[0].lam*u.micron
-
-    '''
-    #Cabs is in dimensions of draine_sizes,draine_lam.
-    #resampling Cabs to a shape of simulation_sizes,draine_lam -- this
-    #will allow us to deal with the fact that Cabs is given at individual
-    #grain sizes (by multiplying by simulation GSD), while also keeping the draine_lam axis available for integration later.
-    '''
-
     
-    f_2d_interp_cation = interp2d(draine_sizes.value,draine_lam.value,Cabs_cation.T,kind = 'cubic')
-    f_2d_interp_neutral = interp2d(draine_sizes.value,draine_lam.value,Cabs_neutral.T,kind = 'cubic')
-    #Cabs_cation_regrid = f_2d_interp_cation(simulation_sizes.value,simulation_isrf_lam.value).T
-    #Cabs_neutral_regrid = f_2d_interp_neutral(simulation_sizes.value,simulation_isrf_lam.value).T
+    # Ensure target_lam has units
+    if not isinstance(target_lam, u.Quantity):
+        target_lam = target_lam * u.micron
+        
+    simulation_sizes = simulation_sizes.to(u.cm)
 
+    # CREATE INTERPOLATION FUNCTION (Size, Lam_Draine) -> Cabs
+    f_2d_interp_cation = interp2d(draine_sizes.value, draine_lam.value, Cabs_cation.T, kind='cubic')
+    f_2d_interp_neutral = interp2d(draine_sizes.value, draine_lam.value, Cabs_neutral.T, kind='cubic')
 
-    #Cabs regrid arrays are (n_sizes,nwavelengths,ncells) big
-    Cabs_cation_regrid_sizes_lam_cells = np.empty([n_simulation_sizes,draine_lam.shape[0],ncells])
-    Cabs_neutral_regrid_sizes_lam_cells = np.empty([n_simulation_sizes,draine_lam.shape[0],ncells])
-    Cabs_cation_regrid_lam_cells = np.empty([draine_lam.shape[0],ncells])
-    Cabs_neutral_regrid_lam_cells = np.empty([draine_lam.shape[0],ncells])
-    gsd_normalized = np.empty([n_simulation_sizes,ncells])
+    # Arrays now sized to target_lam.shape[0] instead of draine_lam.shape[0]
+    Cabs_cation_regrid_sizes_lam_cells = np.empty([n_simulation_sizes, target_lam.shape[0], ncells])
+    Cabs_neutral_regrid_sizes_lam_cells = np.empty([n_simulation_sizes, target_lam.shape[0], ncells])
+    Cabs_cation_regrid_lam_cells = np.empty([target_lam.shape[0], ncells])
+    Cabs_neutral_regrid_lam_cells = np.empty([target_lam.shape[0], ncells])
+    gsd_normalized = np.empty([n_simulation_sizes, ncells])
 
-    print("[pah/isrf_decompose]: resampling Cabs from the Draine size arrays to the simulation size arrays")
+    print("[pah/isrf_decompose]: resampling Cabs from Draine files to the simulation wavelength grid")
 
     for i in tqdm(range(ncells)):
-        Cabs_cation_regrid_sizes_lam_cells[:,:,i] = f_2d_interp_cation(simulation_sizes[i,:],draine_lam.value).T
-        Cabs_neutral_regrid_sizes_lam_cells[:,:,i] = f_2d_interp_neutral(simulation_sizes[i,:],draine_lam.value).T
-    
-        #we now have to get Cabs(nu) -- right now we have Cabs(size,nu).
-        #To do this, we should ensure that the GSD is at the same sizes as the
-        #draine files (and if not, regrid so that it is), and then multiply
-        #Cabs(size,nu) * dN, where dN is the number of grains at a given size.
+        #Evaluate interpolation at target_lam.value
+        Cabs_cation_regrid_sizes_lam_cells[:,:,i] = f_2d_interp_cation(simulation_sizes[i,:], target_lam.value).T
+        Cabs_neutral_regrid_sizes_lam_cells[:,:,i] = f_2d_interp_neutral(simulation_sizes[i,:], target_lam.value).T
         
-        #we normalize the grain size distribution by the integral over the grain sizes so that this is normalized for the dot product into Cabs
-        
+        # Normalize GSD
+        gsd_normalized[:,i] = gsd[i,:]/np.trapz(gsd[i,:], simulation_sizes[i,:])
 
-        gsd_normalized[:,i] = gsd[i,:]/np.trapz(gsd[i,:],simulation_sizes[i,:])
-
-
-        Cabs_cation_regrid_lam_cells[:,i] = np.dot(gsd_normalized[:,i],Cabs_cation_regrid_sizes_lam_cells[:,:,i]) # now in terms of just wavelength,ncells (at simulation_isrf_lam wavelengths)
-        Cabs_neutral_regrid_lam_cells[:,i] = np.dot(gsd_normalized[:,i],Cabs_neutral_regrid_sizes_lam_cells[:,:,i])
+        # Dot product to get Cabs(lambda) for the cell
+        Cabs_cation_regrid_lam_cells[:,i] = np.dot(gsd_normalized[:,i], Cabs_cation_regrid_sizes_lam_cells[:,:,i])
+        Cabs_neutral_regrid_lam_cells[:,i] = np.dot(gsd_normalized[:,i], Cabs_neutral_regrid_sizes_lam_cells[:,:,i])
     
-    #get the units right since they're not faithfully followed throughout
-
     Cabs_cation_regrid_lam_cells = (Cabs_cation_regrid_lam_cells)*u.cm**2
     Cabs_neutral_regrid_lam_cells = (Cabs_neutral_regrid_lam_cells)*u.cm**2
-
-
-    #DEBUG DEBUG DEBUG - these 5 lines are garbage and remove them.
-    #they're intended to only grab Cabs for the 0.1micron value since
-    #that's whats in the draine paper.  we may wantto keep something
-    #like this at the end, but not in it's current form.
-    #Cabs_cation_regrid_lam_cells = Cabs_cation_regrid_lam_cells.value
-    #Cabs_neutral_regrid_lam_cells = Cabs_neutral_regrid_lam_cells.value
-    #for i in range(Cabs_cation_regrid_lam_cells.shape[1]):
-    #    Cabs_cation_regrid_lam_cells[:,i] = Cabs_cation[19,:]
-    #    Cabs_neutral_regrid_lam_cells[:,i] = Cabs_neutral[19,:]
         
-    return Cabs_cation_regrid_lam_cells,Cabs_neutral_regrid_lam_cells
+    return Cabs_cation_regrid_lam_cells, Cabs_neutral_regrid_lam_cells
 
 
 def get_isrf(gsd,reg):
@@ -142,6 +109,7 @@ def get_isrf(gsd,reg):
     simulation_specific_energy_gsd_convolved *= u.erg/u.s #attach units back to it
 
     return simulation_specific_energy_gsd_convolved,simulation_isrf_nu,simulation_isrf_lam
+
 
 def get_beta_nnls(draine_directories, gsd, simulation_sizes, reg):
 
@@ -217,12 +185,16 @@ def get_beta_nnls(draine_directories, gsd, simulation_sizes, reg):
     ncells = reg['dust','mass'].in_units('g').to_astropy().shape[0]
     simulation_sizes = np.broadcast_to(simulation_sizes,(ncells,simulation_sizes.shape[0]))*u.micron
     gsd = gsd.value
-    
-    
-    Cabs_cation_regrid,Cabs_neutral_regrid = get_Cabs(draine_directories,simulation_sizes,gsd)
+
+    Cabs_cation_regrid,Cabs_neutral_regrid = get_Cabs(draine_directories,simulation_sizes,gsd,simulation_isrf_lam)
      
     if cfg.par.SKIP_LOGU_CALC == False:
-        logU_grid = get_logU(simulation_specific_energy_sum_regrid,Cabs_cation_regrid,Cabs_neutral_regrid,draine_lam,reg)
+        #logU_grid = get_logU(simulation_specific_energy_sum_regrid,Cabs_cation_regrid,Cabs_neutral_regrid,draine_lam,simulation_isrf_lam,reg)
+        logU_grid = get_logU(simulation_specific_energy_gsd_convolved, 
+                             Cabs_cation_regrid, 
+                             Cabs_neutral_regrid, 
+                             simulation_isrf_lam, 
+                             reg)
     else:
         print("[pah/isrf_decompose:] SKIP_LOGU_CALC is set to True: Assuming logU across the grid is 0")
         logU_grid = np.zeros(ncells)
@@ -268,58 +240,31 @@ def get_beta_nnls(draine_directories, gsd, simulation_sizes, reg):
     return beta_nnls,logU_grid
 
 
-def get_logU(cell_isrf,Cabs_cation,Cabs_neutral,draine_lam,reg):
-    #get the cell sizes since ISRF is not per cm^2 (and it needs to be
-    #so that we can convert to erg/cm^3)
-
-    #for some reason the units attached in reg.parameters needs to be reattached for it to carry through in the upcoming arithmetic
-    cell_sizes = reg.parameters['cell_size'].value*u.cm
-
-
-    cell_isrf = (cell_isrf/(cell_sizes**2.))
+def get_logU(cell_isrf, Cabs_cation, Cabs_neutral, lam, reg):
     
+    cell_sizes = reg.parameters['cell_size'].value * u.cm
 
-    #get into erg/cm^3 
-    cell_isrf /=const.c*4*np.pi #from: energy density = 4pi/c J_nu
-    cell_isrf = cell_isrf.to(u.erg/u.cm**3)
-
-    h_ref = 1.958e-12*u.erg/u.s #eq 2 from Draine et al.
-    draine_nu = (const.c/draine_lam).to(u.Hz)
-
-
-
-    #DEBUG DEBUG DEBUG
-    #cell_isrf = np.ones(cell_isrf.shape)*1.043e-12*u.erg/u.cm**3
-
-
+    #Convert ISRF (erg/s) -> Energy Density (erg/cm^3)
+    cell_isrf = (cell_isrf / (cell_sizes**2.))
+    cell_isrf /= (const.c * 4 * np.pi)
+    cell_isrf = cell_isrf.to(u.erg / u.cm**3)
     
-    cell_isrf = (cell_isrf.T/draine_nu[::-1]).T
+    nu = (const.c / lam).to(u.Hz)
+
+    # The input cell_isrf acts as u_nu * nu (or similar), so we must divide by nu 
+    # to get the correct spectral density units (erg/cm^3/Hz) for the integral.
+    # We transpose to broadcast (n_cells, n_freq) / (n_freq) -> then transpose back.
+    cell_isrf = (cell_isrf.T / nu).T
+
+    h_ref = 1.958e-12 * u.erg / u.s 
     
-    #eq. 5 from Draine et al. 2021, 917, 3, ApJ
-    #U = int(d_nu u * c* C_abs)/h_ref
+    y = cell_isrf * const.c * Cabs_neutral / h_ref
+    
+    U = np.abs(np.trapz(y, nu, axis=0)).decompose()
 
-
-    print('[pah/isrf_decompose/get_logU:] Computing logU for PAH calculation')
-
-    y = cell_isrf * const.c*Cabs_neutral/h_ref
-    U= (np.trapz(y,draine_nu[::-1],axis=0)).decompose()
-
-    #DEBUG DEBUG DEBUG
-    '''
-    import matplotlib.pyplot as plt
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
-    plt.hist(np.log10(U.value).flatten())
-    ax.set_yscale('log')
-    fig.savefig('hist_logu.png',dpi=300)
-    '''
-
-    #just to make any numerical isseues with U<~0 not impact our logU calc
-    U[U<=0] = 1.e-10
-    U[U>=1e4] = 1.e4
+    U[U <= 0] = 1.e-10
+    U[U >= 1e4] = 1.e4
+    
     logU = np.log10(U)
 
-    
     return logU
-
-    
