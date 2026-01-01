@@ -56,7 +56,7 @@ def get_Cabs(draine_directories, simulation_sizes, gsd, target_lam):
     gsd_normalized = np.empty([n_simulation_sizes, ncells])
 
     print("[pah/isrf_decompose]: resampling Cabs from Draine files to the simulation wavelength grid")
-
+    
     for i in tqdm(range(ncells)):
         #Evaluate interpolation at target_lam.value
         Cabs_cation_regrid_sizes_lam_cells[:,:,i] = f_2d_interp_cation(simulation_sizes[i,:], target_lam.value).T
@@ -85,11 +85,9 @@ def get_isrf(gsd,reg):
     simulation_isrf_nu = dset['ISRF_frequency_bins'][:] * u.Hz
     simulation_isrf_lam = (const.c/simulation_isrf_nu).to(u.micron)
 
-    simulation_specific_energy_sum = dset['specific_energy_nu']*u.erg/u.s/u.g #is [n_nu, n_dust, n_cells] big
-
-    #get the simulation_isrf in units of erg/s
+    simulation_specific_energy_sum = dset['specific_energy_nu']*u.erg/u.g/u.Hz #is [n_nu, n_dust, n_cells] big
     grid_dust_masses = reg['dust','mass'].in_units('g').to_astropy() #getting the dust masses out of yt units and into astropy units
-    simulation_specific_energy_sum *= grid_dust_masses.cgs #now in erg/s
+    simulation_specific_energy_sum *= grid_dust_masses.cgs #now in erg/Hz
 
     #clip values that are MC noise too high
     simulation_specific_energy_sum[simulation_specific_energy_sum.value > 1.e50] = np.median(simulation_specific_energy_sum)

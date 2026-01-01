@@ -19,9 +19,161 @@ from unyt import unyt_quantity,unyt_array
 import pah_spec  # import Helena Richie's pah_spec model for SPA calculations
 from powderday.pah.isrf_decompose import get_Cabs,get_logU
 from scipy.interpolate import interp1d
-
+import tqdm
 #This global variable will hold the model inside each worker process
 _worker_ps_model = None
+
+
+
+import matplotlib.pyplot as plt
+import numpy as np
+import astropy.units as u
+import astropy.constants as constants
+# Make sure pah_spec is imported as ps_module or similar if 'pah_spec' variable name is used for the module
+import pah_spec 
+
+
+import matplotlib.pyplot as plt
+import numpy as np
+import astropy.units as u
+import astropy.constants as constants
+import pah_spec
+
+import matplotlib.pyplot as plt
+import numpy as np
+import astropy.units as u
+import astropy.constants as constants
+# Ensure pah_spec is imported
+import pah_spec
+    
+
+def debug_compare_inputs(ps, sim_lam, sim_u_lambda, sim_gsd_neu, sim_gsd_ion, sim_sizes):
+    """
+    Plots and prints a comparison between the Simulation inputs for a single cell
+    and the pah_spec reference defaults.
+    """
+    # ==========================================
+    # 1. SETUP REFERENCE DATA (PAH_SPEC DEFAULTS)
+    # ==========================================
+    
+    # Reference ISRF: strictly 10 * ps.u_lambda_arr as requested
+    ref_u_lambda = 10 * ps.u_lambda_arr
+    
+    ref_lam = ps.wavelength_u_arr
+    if not hasattr(ref_lam, 'unit'): 
+        ref_lam *= u.micron
+    
+    # Reference GSD
+    ref_gsd_neu = ps.size_dist_neu
+    ref_gsd_ion = ps.size_dist_ion
+    
+    # Reference Sizes: Use module constant explicitly to avoid AttributeError
+    ref_sizes = pah_spec.GRAIN_SIZES
+    if not hasattr(ref_sizes, 'unit'): 
+        ref_sizes *= u.angstrom # pah_spec defaults are typically Angstroms here
+    else:
+        ref_sizes = ref_sizes.to(u.angstrom)
+
+    # ==========================================
+    # 2. CALCULATE DIAGNOSTICS
+    # ==========================================
+    
+    # Helper to integrate energy density
+    def get_integrated_energy(lam, u_lam):
+        # Sort by wavelength for integration
+        sort_idx = np.argsort(lam)
+        # Trapz integration
+        return np.trapz(u_lam[sort_idx], lam[sort_idx])
+
+    # Ensure units for integration
+    sim_lam_cm = sim_lam.to(u.cm)
+    sim_u_lam_cgs = sim_u_lambda.to(u.erg / u.cm**4)
+    
+    ref_lam_cm = ref_lam.to(u.cm)
+    ref_u_lam_cgs = ref_u_lambda.to(u.erg / u.cm**4)
+
+    E_dens_sim = get_integrated_energy(sim_lam_cm, sim_u_lam_cgs)
+    E_dens_ref = get_integrated_energy(ref_lam_cm, ref_u_lam_cgs)
+    
+    ratio_U = (E_dens_sim / E_dens_ref).decompose().value
+
+    # ==========================================
+    # 3. PLOTTING
+    # ==========================================
+    fig, ax = plt.subplots(1, 2, figsize=(16, 6))
+    
+    # User Preference: Font sizes
+    plt.rcParams.update({'axes.labelsize': 16, 'xtick.labelsize': 16, 
+                         'ytick.labelsize': 16, 'legend.fontsize': 14})
+
+    # --- Plot 1: Radiation Fields (ISRF) ---
+    # Plot Reference
+    ax[0].loglog(ref_lam.to(u.micron), ref_u_lambda.to(u.erg/u.cm**4), 
+                 label=r'Reference ($10 \times$ Default)', color='black', linestyle='--')
+    
+    # Plot Simulation
+    # Ensure sim_lam is sorted for plotting if it isn't already
+    sort_idx_sim = np.argsort(sim_lam)
+    ax[0].loglog(sim_lam[sort_idx_sim].to(u.micron), sim_u_lambda[sort_idx_sim].to(u.erg/u.cm**4), 
+                 label='Simulation Cell (ergcm4)', color='red')
+    
+    ax[0].set_xlabel(r'Wavelength [$\mu$m]')
+    ax[0].set_ylabel(r'$u_\lambda$ [erg cm$^{-4}$]')
+    ax[0].legend()
+    # User Preference: No title
+
+    # --- Plot 2: Grain Size Distributions (Neutrals) ---
+    # Plot Reference
+    # Note: pah_spec defaults are often per H. 
+    ax[1].loglog(ref_sizes.to(u.angstrom), ref_gsd_neu, 
+                 label='Reference GSD (Neutral)', color='black', linestyle='--')
+    
+    # Plot Simulation
+    sim_sizes_ang = sim_sizes.to(u.angstrom)
+    
+    # Check if shapes match for plotting. If sim_gsd is a single value per bin (expected), plot directly.
+    ax[1].loglog(sim_sizes_ang, sim_gsd_neu, 
+                 label='Simulation GSD (Neutral)', color='red', marker='o')
+
+    ax[1].set_xlabel(r'Grain Size $a$ [$\AA$]')
+    ax[1].set_ylabel(r'Size Dist ($dn/da/n_H$)')
+    ax[1].legend()
+    # User Preference: No title
+
+    plt.tight_layout()
+    # User Preference: dpi=300
+    plt.savefig('debug_pah_comparison.png', dpi=300)
+    # plt.show() # Uncomment if you have a display
+
+    # ==========================================
+    # 4. PRINT DIAGNOSTICS
+    # ==========================================
+    print("\n" + "="*40)
+    print(f"DEBUG DIAGNOSTICS: Sim vs Reference")
+    print("="*40)
+    print(f"Total Integrated Energy Density (approx U):")
+    print(f"  Reference (10*default): {E_dens_ref:.3e}")
+    print(f"  Simulation Cell:        {E_dens_sim:.3e}")
+    print(f"  Ratio (Sim / Ref):      {ratio_U:.5f}")
+    
+    if ratio_U < 1e-4:
+         print("  --> [CRITICAL] Simulation ISRF is extremely faint!")
+    
+    print("-" * 20)
+    print(f"Grain Size Distribution (Neutral) Max Value:")
+    print(f"  Reference Max: {np.max(ref_gsd_neu):.3e}")
+    print(f"  Simulation Max: {np.max(sim_gsd_neu):.3e}")
+    
+    if np.max(sim_gsd_neu) > 1e10:
+        print("  --> [CRITICAL] Sim GSD is huge (~1e50?). This looks like Total Number.")
+        print("                 pah_spec expects abundance per H (~1e-7).")
+        print("                 Check division by (n_H * Volume).")
+    elif np.max(sim_gsd_neu) < 1e-20:
+        print("  --> [CRITICAL] Sim GSD is extremely small. Check units (cm^-3 vs code units).")
+    
+    print("="*40 + "\n")
+    
+
 
 def get_whole_ceil(n,near):
     nn = np.divide(n,np.linspace(1,np.ceil(n/near),int(np.ceil(n/near))))
@@ -48,33 +200,53 @@ def _init_worker():
     it for every single cell.
     """
     global _worker_ps_model
+    import pah_spec
     _worker_ps_model = pah_spec.PahSpec()
+
+
+# ==========================================
+# PARALLEL HELPER FUNCTIONS (Part 2/3)
+# ==========================================
 
 def _process_cell_task(args):
     """
-    Worker process that replicates the exact math of the simplified serial code.
+    Worker process that replicates the exact physics and unit logic 
+    of the serial implementation.
     """
-    # Unpack arguments (all in raw values/floats for speed, except wavelength arrays)
-    (wav_input,             # array: isrf_lam (microns)
-     u_lambda_input,        # array: cell_isrf_this (erg/cm^4)
-     gsd_vals,              # array: raw counts for the 3 bins
-     sim_sizes_val,         # array: simulation sizes in cm
-     n_H_val,               # float: n_H in cm^-3
-     cell_vol_val,          # float: cell volume in cm^3
-     f_ion_vals) = args     # array: f_ion fraction
+    # Unpack arguments
+    # Note: These inputs are expected to be Astropy Quantities (with units)
+    (wav_input,          # [micron] Wavelengths (reversed)
+     u_lambda_input,     # [erg/cm^4] Specific Energy Density (reversed)
+     gsd_slice,          # [dimensionless] Grain counts for the PAH bins
+     n_H,                # [cm^-3] Gas density
+     cell_vol,           # [cm^3] Cell volume
+     sim_sizes,          # [cm] Simulation grain sizes (sliced to PAH bins)
+     f_ion               # [dimensionless] Ionization fraction (sliced)
+     ) = args     
     
-    # 1. Calculate Distributions
-    # Matches Serial: gsd / (n_H * vol) / size * fraction
-    
-    # Common denominator: (n_H * vol * size)
-    # Note: sim_sizes_val should be in cm to match serial logic if n_H/vol are cgs
-    denom = (n_H_val * cell_vol_val) * sim_sizes_val
-    
-    cell_size_dist_neu = (gsd_vals / denom) * (1.0 - f_ion_vals)
-    cell_size_dist_ion = (gsd_vals / denom) * f_ion_vals
 
-    # 2. Generate Spectrum
-    # spectrum output is power per wavelength density [erg / (cm * s)]
+    norm_factor = (n_H.value * cell_vol.value)
+    if norm_factor <= 0:
+        # Return zero arrays with correct units if cell is empty
+        zero_arr = np.zeros(len(wav_input)) * u.erg / (u.cm * u.s)
+        return zero_arr, zero_arr
+    
+    # Calculate distributions
+    #cell_size_dist_neu = gsd_slice.value / norm_factor / sim_sizes.value * (1. - f_ion.value)
+    #cell_size_dist_ion = gsd_slice.value / norm_factor / sim_sizes.value * f_ion.value
+
+    cell_size_dist_neu = (gsd_slice.value / norm_factor) * (1. - f_ion.value)
+    cell_size_dist_ion = (gsd_slice.value / norm_factor) * f_ion.value
+    
+    # ------------------------------------------------------------------
+    # GENERATE SPECTRUM
+    # ------------------------------------------------------------------
+    # Inputs:
+    #   wavelength_arr: [micron] Quantity
+    #   u_lambda_arr:   [erg/cm^4] Quantity
+    #   size_dist_neu:  [float array] Abundance (per H)
+    #   size_dist_ion:  [float array] Abundance (per H)
+    
     spec_neu, spec_ion = _worker_ps_model.generate_spectrum(
         wavelength_arr=wav_input, 
         u_lambda_arr=u_lambda_input, 
@@ -82,131 +254,159 @@ def _process_cell_task(args):
         size_dist_ion=cell_size_dist_ion
     )
     
-    # 3. Scale back by (n_H * vol)
-    # Matches Serial: spectrum * (n_H * vol)
-    # Returns total luminosity per wavelength [erg / (cm * s)]
+    # ------------------------------------------------------------------
+    # SCALE BACK TO LUMINOSITY
+    # ------------------------------------------------------------------
+    # Serial Code Reference:
+    # neutral_grid_PAH_luminosity[...] = spectrum_neu * (n_H.value * vol.value)
     
-    lum_neu = spec_neu.value * (n_H_val * cell_vol_val)
-    lum_ion = spec_ion.value * (n_H_val * cell_vol_val)
+    # Result is Total Luminosity per wavelength [erg / (cm * s)]
+    lum_neu = spec_neu * norm_factor
+    lum_ion = spec_ion * norm_factor
     
     return lum_neu, lum_ion
 
+
+# ==========================================
+# PARALLEL DRIVER FUNCTION (Part 3/3)
+# ==========================================
+
 def compute_grid_PAH_luminosity_SPA_parallel(cell_list, gsd, reg, simulation_sizes, ds, draine_directories, f_ion):
-    """
-    Parallel version of the simplified SPA calculation.
-    """
-    from powderday.pah.isrf_decompose import get_isrf
-    
+
+    #The number of PAH sizes considered by pah_spec
+    n_pah_sizes = len(pah_spec.GRAIN_SIZES)
+
+    # ---------------------------------------------------------
+    # 1. PREPARE ISRF
+    # ---------------------------------------------------------
     simulation_specific_energy_gsd_convolved, simulation_isrf_nu, simulation_isrf_lam = get_isrf(gsd, reg)
+    cell_isrf = simulation_specific_energy_gsd_convolved.cgs.value.T * u.erg / u.Hz
 
-    cell_isrf = simulation_specific_energy_gsd_convolved.cgs.T
-    cell_sizes = reg.parameters['cell_size'].value * u.cm
-    
-    # Convert to energy density
-    cell_isrf = (cell_isrf.T / (cell_sizes**2.))
-    cell_isrf /= constants.c * 4 * np.pi 
-    cell_isrf = cell_isrf.to(u.erg / u.cm**3)
-    
-    # (n_cells, n_wav)
-    cell_isrf_ergcm4 = cell_isrf.T / simulation_isrf_lam.to(u.cm)
+    #convert yt-->astropy units
+    cell_sizes = reg.parameters['cell_size'].in_units('cm').value * u.cm
 
-    # 2. CALCULATE DENSITY (Identical to Serial)
+    #Convert E_nu [erg/Hz] -> Energy Density u_nu [erg/cm^3/Hz]
+    cell_vol = cell_sizes**3
+    u_nu = cell_isrf.T / cell_vol
+    
+    # Convert u_nu [per Hz] -> u_lambda [per cm]
+    lam = simulation_isrf_lam
+    jacobian = constants.c / (lam**2)
+    cell_isrf_ergcm4 = u_nu.T * jacobian
+    # Verify strict unit compliance 
+    cell_isrf_ergcm4 = cell_isrf_ergcm4.to(u.erg / u.cm**4)
+
+    # ---------------------------------------------------------
+    # 2. PREPARE DENSITY & CONSTANTS
+    # ---------------------------------------------------------
     n_H = ds.arr(reg['PartType3', 'Dust_GasDensity'], 'code_mass/code_length**3').in_units('g/cm**3').value * u.g / u.cm**3
-    n_H /= constants.m_p
+    n_H /= constants.m_p.cgs
     n_H = n_H.to(u.cm**-3)
 
     n_cells = len(cell_list)
     
-    # Instantiate temp model for dimensions
+    # Instantiate temp model just to get wavelength array dimensions
     temp_ps = pah_spec.PahSpec() 
     n_out_wav = len(temp_ps.emission_wavelengths)
     
-    # Flip wavelengths once (ascending order for pah_spec)
+    # Flip wavelengths (ascending order for pah_spec)
     wav_input = simulation_isrf_lam.to(u.micron)[::-1]
     
-    # Prepare inputs that are constant across cells
-    # Use .value to strip units for faster pickling
-    sim_sizes_val = simulation_sizes[0:3].value 
-    f_ion_sliced = f_ion[0:3].value
-    
-    # 4. PREPARE TASK LIST
-    print(f"[SPA Parallel] Calculating PAH spectra for {n_cells} cells...")
+    # Slice simulation inputs constant across cells
+    sim_sizes_sliced = simulation_sizes[0:n_pah_sizes]
+    f_ion_sliced = f_ion[0:n_pah_sizes]
+
+    # ---------------------------------------------------------
+    # 3. BUILD TASK LIST
+    # ---------------------------------------------------------
+    print(f"[SPA Parallel] Preparing tasks for {n_cells} cells...")
     tasks = []
     
     for i in range(n_cells):
         
         # Specific inputs for this cell
-        cell_vol_val = cell_sizes[i].value**3
-        n_H_val = n_H[i].value
+        # ISRF (flipped to ascending wavelength)
+        u_lambda_this = cell_isrf_ergcm4[i, :][::-1]
         
-        # Flip ISRF to match wavelength order
-        u_lambda_input = cell_isrf_ergcm4[i, :][::-1]
-        
-        # Raw GSD counts for 3 PAH bins
-        gsd_vals = gsd[i, :][0:3].value 
+        # GSD counts for the PAH bins
+        gsd_slice = gsd[i, :][0:n_pah_sizes]
+
+        # Geometry
+        n_H_this = n_H[i]
+        vol_this = cell_sizes[i]**3 # Quantity [cm^3]
 
         task_tuple = (
-            wav_input,
-            u_lambda_input,
-            gsd_vals,
-            sim_sizes_val,
-            n_H_val,
-            cell_vol_val,
-            f_ion_sliced
+            wav_input,          # Quantity [micron]
+            u_lambda_this,      # Quantity [erg/cm^4]
+            gsd_slice,          # Array (counts)
+            n_H_this,           # Quantity [cm^-3]
+            vol_this,           # Quantity [cm^3]
+            sim_sizes_sliced,   # Quantity [cm]
+            f_ion_sliced        # Array (fraction)
         )
         tasks.append(task_tuple)
 
-    # 5. RUN PARALLEL POOL
-    with mp.Pool(initializer=_init_worker) as pool:
-        results = pool.map(_process_cell_task, tasks)
+    # ---------------------------------------------------------
+    # 4. RUN PARALLEL POOL
+    # ---------------------------------------------------------
+    n_procs = cfg.par.n_processes
+    print(f"[SPA Parallel] Launching pool with {n_procs} workers...")
 
-    # 6. UNPACK RESULTS
-    neutral_grid_PAH_luminosity = np.zeros((n_cells, n_out_wav))
-    ion_grid_PAH_luminosity = np.zeros((n_cells, n_out_wav))
+    with mp.Pool(processes=n_procs, initializer=_init_worker) as pool:
+        results = list(tqdm.tqdm(pool.imap(_process_cell_task, tasks), total=n_cells))
+
+    # ---------------------------------------------------------
+    # 5. UNPACK RESULTS
+    # ---------------------------------------------------------
+    neutral_grid_PAH_luminosity = np.zeros((n_cells, n_out_wav)) * u.erg / (u.cm * u.s)
+    ion_grid_PAH_luminosity = np.zeros((n_cells, n_out_wav)) * u.erg / (u.cm * u.s)
 
     for i, (res_neu, res_ion) in enumerate(results):
         neutral_grid_PAH_luminosity[i, :] = res_neu
         ion_grid_PAH_luminosity[i, :] = res_ion
 
-    # 7. APPLY UNITS AND WAVELENGTH SCALING    
-    # Currently [erg / (cm * s)]. Add units back.
-    neutral_grid_PAH_luminosity = neutral_grid_PAH_luminosity * u.erg / (u.cm * u.s)
-    ion_grid_PAH_luminosity = ion_grid_PAH_luminosity * u.erg / (u.cm * u.s)
-    
-    # Multiply by wavelength [cm] to get Power [erg/s]
-    neutral_grid_PAH_luminosity = neutral_grid_PAH_luminosity * temp_ps.emission_wavelengths.to(u.cm)
-    ion_grid_PAH_luminosity = ion_grid_PAH_luminosity * temp_ps.emission_wavelengths.to(u.cm)
-    
     grid_PAH_luminosity = neutral_grid_PAH_luminosity + ion_grid_PAH_luminosity
 
     return grid_PAH_luminosity, neutral_grid_PAH_luminosity, ion_grid_PAH_luminosity
 
 
 
-
 def compute_grid_PAH_luminosity_SPA_serial(cell_list, gsd, reg, simulation_sizes, ds, draine_directories, f_ion):
-    """
-    Compute PAH luminosity using the Single Photon Approximation (Richie & Hensley 2025).
-    """
     
-    from astropy import constants
-    import pah_spec
+    #IN PRACTICE THIS SERIAL CODE ISN'T INTENDED TO BE USED IN
+    #PRODUCTION. IT'S JUST HERE BECAUSE IT'S 1000X EASIER TO DEVELOP
+    #AND DEBUG SERIAL CODE, AND THEN, ONCE VERIFIED, CONVERT TO
+    #PARALLEL.
+
+
+    n_pah_sizes = len(pah_spec.GRAIN_SIZES)
+
     
     # Get the ISRF for all cells
     simulation_specific_energy_gsd_convolved, simulation_isrf_nu, simulation_isrf_lam = get_isrf(gsd, reg)
 
     cell_isrf = simulation_specific_energy_gsd_convolved.cgs.T
     cell_sizes = reg.parameters['cell_size'].value * u.cm
+
     
-    # Convert to energy density
-    cell_isrf = (cell_isrf.T / (cell_sizes**2.))
-    cell_isrf /= constants.c * 4 * np.pi
-    cell_isrf = cell_isrf.to(u.erg / u.cm**3)
-    cell_isrf_ergcm4 = cell_isrf.T / simulation_isrf_lam.to(u.cm)
+    # 1. Convert E_nu [erg/Hz] -> Energy Density u_nu [erg/cm^3/Hz]
+    cell_vol = cell_sizes**3
+    cell_isrf = cell_isrf.value*u.erg/u.Hz
+    u_nu = cell_isrf.T / cell_vol
+    
+    u_nu = u_nu.to(u.erg / u.cm**3 / u.Hz)
+    
+    # 2. Convert u_nu -> u_lambda 
+    lam_cm = simulation_isrf_lam.to(u.cm)
+    jacobian = constants.c / (lam_cm**2)
+    cell_isrf_ergcm4 = u_nu.T * jacobian
+
+    cell_isrf_ergcm4 = cell_isrf_ergcm4.to(u.erg / u.cm**4)
+
 
     # Initialize pah_spec
     ps = pah_spec.PahSpec()
-
+    
     n_cells = len(cell_list)
     n_output_wav = len(ps.emission_wavelengths)
     
@@ -216,26 +416,51 @@ def compute_grid_PAH_luminosity_SPA_serial(cell_list, gsd, reg, simulation_sizes
 
     # Calculate n_H
     n_H = ds.arr(reg['PartType3', 'Dust_GasDensity'], 'code_mass/code_length**3').in_units('g/cm**3').value * u.g / u.cm**3
-    n_H /= constants.m_p
+    n_H /= constants.m_p.cgs
     n_H = n_H.to(u.cm**-3)
 
-    print(f"[SPA] Using 3 PAH size bins from pah_spec")
-    print(f"[SPA] pah_spec grain sizes: {pah_spec.GRAIN_SIZES.to(u.angstrom)}")
-    print(f"[SPA] Simulation sizes (first 3): {simulation_sizes[0:3].to(u.angstrom)}")
 
     for counter, cell in enumerate(cell_list):
-        if counter % 100 == 0:
-            print(f"[SPA] Processing cell {counter}/{n_cells}")
+        print(counter)
+
+        # Skip empty cells to prevent divide-by-zero instability
+        if n_H[counter].value < 1e-5: 
+            continue
 
         # Get the ISRF for this cell (ascending wavelength order for pah_spec)
         isrf_lam = simulation_isrf_lam.to(u.micron)[::-1]
         cell_isrf_this = cell_isrf_ergcm4[counter, :][::-1]
 
+        
+        # DIAGNOSTIC 1: Check inputs for instability
+        print(f"  [Cell {counter}] n_H: {n_H[counter]:.3e}")
+        print(f"  [Cell {counter}] ISRF max: {np.max(cell_isrf_this.value):.3e}")
+
+        
         # Original normalization approach - divide by (n_H * volume * size)
         # This converts grain counts to something like dn/da per H per volume
-        cell_size_dist_neu = gsd[counter, :][0:3].value / (n_H[counter].value * cell_sizes[counter].value**3) / simulation_sizes[0:3].value * (1. - f_ion[0:3].value)
-        cell_size_dist_ion = gsd[counter, :][0:3].value / (n_H[counter].value * cell_sizes[counter].value**3) / simulation_sizes[0:3].value * f_ion[0:3].value
+        #cell_size_dist_neu = gsd[counter, :][0:n_pah_sizes].value / (n_H[counter].value * cell_sizes[counter].value**3) / simulation_sizes[0:n_pah_sizes].value * (1. - f_ion[0:n_pah_sizes].value)
+        #cell_size_dist_ion = gsd[counter, :][0:n_pah_sizes].value / (n_H[counter].value * cell_sizes[counter].value**3) / simulation_sizes[0:n_pah_sizes].value * f_ion[0:n_pah_sizes].value
 
+        cell_size_dist_neu = gsd[counter, :][0:n_pah_sizes].value / (n_H[counter].value * cell_sizes[counter].value**3)  * (1. - f_ion[0:n_pah_sizes].value)
+        cell_size_dist_ion = gsd[counter, :][0:n_pah_sizes].value / (n_H[counter].value * cell_sizes[counter].value**3)  * f_ion[0:n_pah_sizes].value
+
+
+        # DIAGNOSTIC 3: Check normalization passed to spectrum generator
+        print(f"  [Cell {counter}] Max Grain/H input: {np.max(cell_size_dist_neu):.3e}")
+        
+        # DIAGNOSTIC 4: Check Physical Cell Size
+        # (Add this near the other print statements)
+        vol_cm3 = cell_sizes[counter].value**3
+        size_pc = cell_sizes[counter].to(u.pc).value
+        
+        print(f"--- CELL {counter} GEOMETRY CHECK ---")
+        print(f"  Size:   {size_pc:.4f} pc")
+        print(f"  Volume: {vol_cm3:.3e} cm^3")
+        print(f"  n_H:    {n_H[counter].value:.3e} cm^-3")
+        print(f"  Total H atoms (n_H * Vol): {(n_H[counter].value * vol_cm3):.3e}")
+
+        
         # Generate the spectrum using pah_spec
         spectrum_neu, spectrum_ion = ps.generate_spectrum(
             wavelength_arr=isrf_lam,
@@ -244,16 +469,48 @@ def compute_grid_PAH_luminosity_SPA_serial(cell_list, gsd, reg, simulation_sizes
             size_dist_ion=cell_size_dist_ion
         )
         
+
         # Scale back by (n_H * volume) to get total luminosity per wavelength
         neutral_grid_PAH_luminosity[counter, :] = spectrum_neu * (n_H[counter].value * cell_sizes[counter].value**3)
         ion_grid_PAH_luminosity[counter, :] = spectrum_ion * (n_H[counter].value * cell_sizes[counter].value**3)
 
-    # Convert from power per wavelength [erg/(cm*s)] to power [erg/s]
-    neutral_grid_PAH_luminosity = neutral_grid_PAH_luminosity * ps.emission_wavelengths.to(u.cm)
-    ion_grid_PAH_luminosity = ion_grid_PAH_luminosity * ps.emission_wavelengths.to(u.cm)
 
+        
+        # --- DEBUG CALL HERE (Only for the first cell) ---
+        debug_compare_inputs(
+            ps,
+            isrf_lam,
+            cell_isrf_this,
+            cell_size_dist_neu,
+	    cell_size_dist_ion,
+            simulation_sizes[0:n_pah_sizes]
+        )
+
+
+        # DIAGNOSTIC 2: Compare raw sum vs integrated sum
+        
+        # Current method (Sum of L_lambda)
+        raw_sum = np.sum(neutral_grid_PAH_luminosity[counter, :].value + 
+                         ion_grid_PAH_luminosity[counter, :].value)
+        
+        # Integration approximation (L_lambda * lambda) -> erg/s
+        # (This is rough integration, but gets the order of magnitude right)
+        wavelengths_cm = ps.emission_wavelengths.to(u.cm).value
+        integrated_sum = np.sum(
+            (neutral_grid_PAH_luminosity[counter, :].value + 
+             ion_grid_PAH_luminosity[counter, :].value) * wavelengths_cm
+        )
+        
+        print(f"  [Cell {counter}] Raw Sum (erg/s/cm): {raw_sum:.3e}")
+        print(f"  [Cell {counter}] Integrated (erg/s):   {integrated_sum:.3e}")
+
+                
+	#ENDDEBUG
+
+        
     grid_PAH_luminosity = neutral_grid_PAH_luminosity + ion_grid_PAH_luminosity
 
+    #returns are in erg/cm/s
     return grid_PAH_luminosity, neutral_grid_PAH_luminosity, ion_grid_PAH_luminosity
 
 
@@ -618,7 +875,6 @@ def pah_source_add(ds,reg,m,boost):
         grid_PAH_luminosity = dum[0]*u.erg/u.s
         grid_neutral_PAH_luminosity = dum[1]*u.erg/u.s
         grid_ion_PAH_luminosity = dum[2]*u.erg/u.s
-
         pah_lam = draine_lam
 
     else:
@@ -635,17 +891,15 @@ def pah_source_add(ds,reg,m,boost):
         )
         
         #grid_PAH_luminosity, grid_neutral_PAH_luminosity,grid_ion_PAH_luminosity = compute_grid_PAH_luminosity_SPA_serial(cell_list,grid_of_sizes,reg,simulation_sizes,ds,draine_directories,f_ion)
-        import pdb
-        pdb.set_trace()
         #get the units of wavelength back out - get the emission wavelengths
         temp_ps = pah_spec.PahSpec()
         SPA_emission_wavelengths = temp_ps.emission_wavelengths
-        #grid_PAH_luminosity *= SPA_emission_wavelengths.to(u.cm)
-        #grid_neutral_PAH_luminosity *= SPA_emission_wavelengths.to(u.cm)
-        #grid_ion_PAH_luminosity *= SPA_emission_wavelengths.to(u.cm)
+        grid_PAH_luminosity *= SPA_emission_wavelengths.to(u.cm)
+        grid_neutral_PAH_luminosity *= SPA_emission_wavelengths.to(u.cm)
+        grid_ion_PAH_luminosity *= SPA_emission_wavelengths.to(u.cm)
 
         pah_lam = SPA_emission_wavelengths.to(u.micron)
-
+        
     '''
 
 #THIS COMMENTED BLOCK IS FOR DOING THE PAH LUMINOSITY COMPUTATIONS IN
