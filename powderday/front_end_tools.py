@@ -122,7 +122,9 @@ def compute_ISRF_SED(m, par, model):
 
     sed = m.add_peeled_images(sed=True, image=False)
     sed.set_wavelength_range(2500, 0.001, 1000.)
-    sed.set_viewing_angles(np.linspace(0, 90, 1).tolist(), np.repeat(np.linspace(0, 90, 1), 1))
+    #sed.set_viewing_angles(np.linspace(0, 90, 1).tolist(), np.repeat(np.linspace(0, 90, 1), 1))
+    sed.set_viewing_angles(np.linspace(0, 90, par.NTHETA).tolist(
+            ) * par.NPHI, np.repeat(np.linspace(0, 90, par.NPHI), par.NPHI))
     sed.set_track_origin('basic')
 
     print('[pd_front_end]: Beginning RT Stage: For ISRF calculation')
