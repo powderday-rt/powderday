@@ -4,7 +4,8 @@ import powderday.config as cfg
 from astropy import units as u
 from astropy import constants as const
 from powderday.pah.pah_file_read import read_draine_file
-from scipy.interpolate import interp1d,interp2d
+from scipy.interpolate import interp1d
+from scipy.interpolate import RectBivariateSpline as RBS
 from scipy.optimize import nnls
 from tqdm import tqdm
 
@@ -56,8 +57,8 @@ def get_Cabs(draine_directories,simulation_sizes,gsd):
     '''
 
     
-    f_2d_interp_cation = interp2d(draine_sizes.value,draine_lam.value,Cabs_cation.T,kind = 'cubic')
-    f_2d_interp_neutral = interp2d(draine_sizes.value,draine_lam.value,Cabs_neutral.T,kind = 'cubic')
+    f_2d_interp_cation = RBS(draine_sizes.value,draine_lam.value,Cabs_cation, kx=3, ky=3)
+    f_2d_interp_neutral = RBS(draine_sizes.value,draine_lam.value,Cabs_neutral, kx=3, ky=3)
     #Cabs_cation_regrid = f_2d_interp_cation(simulation_sizes.value,simulation_isrf_lam.value).T
     #Cabs_neutral_regrid = f_2d_interp_neutral(simulation_sizes.value,simulation_isrf_lam.value).T
 
@@ -72,8 +73,8 @@ def get_Cabs(draine_directories,simulation_sizes,gsd):
     print("[pah/isrf_decompose]: resampling Cabs from the Draine size arrays to the simulation size arrays")
 
     for i in tqdm(range(ncells)):
-        Cabs_cation_regrid_sizes_lam_cells[:,:,i] = f_2d_interp_cation(simulation_sizes[i,:],draine_lam.value).T
-        Cabs_neutral_regrid_sizes_lam_cells[:,:,i] = f_2d_interp_neutral(simulation_sizes[i,:],draine_lam.value).T
+        Cabs_cation_regrid_sizes_lam_cells[:,:,i] = f_2d_interp_cation(simulation_sizes[i,:],draine_lam.value)
+        Cabs_neutral_regrid_sizes_lam_cells[:,:,i] = f_2d_interp_neutral(simulation_sizes[i,:],draine_lam.value)
     
         #we now have to get Cabs(nu) -- right now we have Cabs(size,nu).
         #To do this, we should ensure that the GSD is at the same sizes as the
@@ -253,7 +254,9 @@ def get_beta_nnls(draine_directories, gsd, simulation_sizes, reg):
     idx = (np.abs(draine_lam.to(u.micron).value - 1)).argmin()
     x = x[:,0:idx]
     y = y[0:idx,:]
-    
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+    y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
+
 
 
     
