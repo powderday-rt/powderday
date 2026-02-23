@@ -207,7 +207,6 @@ def _init_worker():
 # ==========================================
 # PARALLEL HELPER FUNCTIONS (Part 2/3)
 # ==========================================
-
 def _process_cell_task(args):
     """
     Worker process that replicates the exact physics and unit logic 
@@ -221,9 +220,9 @@ def _process_cell_task(args):
      n_H,                # [cm^-3] Gas density
      cell_vol,           # [cm^3] Cell volume
      sim_sizes,          # [cm] Simulation grain sizes (sliced to PAH bins)
-     f_ion               # [dimensionless] Ionization fraction (sliced)
+     f_ion,              # [dimensionless] Ionization fraction (sliced)
+     skip_logu           # [bool] If True, cap ISRF at U=1 (mMMP field)
      ) = args     
-    
 
     norm_factor = (n_H.value * cell_vol.value)
     if norm_factor <= 0:
@@ -237,7 +236,25 @@ def _process_cell_task(args):
 
     cell_size_dist_neu = (gsd_slice.value / norm_factor) * (1. - f_ion.value)
     cell_size_dist_ion = (gsd_slice.value / norm_factor) * f_ion.value
-    
+
+    # ------------------------------------------------------------------
+    # CAP ISRF AT U=1 (equivalent to SKIP_LOGU_CALC in non-SPA path)
+    # ------------------------------------------------------------------
+    # In the non-SPA Draine lookup table approach, SKIP_LOGU_CALC forces
+    # logU=0 everywhere.  Here, the equivalent is to cap the integrated
+    # energy density at the mMMP (Mathis) field level U=1.  This
+    # preserves the spectral shape but prevents cells with very high
+    # radiation fields from producing runaway PAH luminosity.
+    if skip_logu:
+        # Integrate u_lambda [erg/cm^4] over wavelength [cm] -> u_total [erg/cm^3]
+        u_total = np.trapz(u_lambda_input.value, x=wav_input.to(u.cm).value)
+        # mMMP field energy density at U=1 (Draine 2011)
+        u_mathis = 8.64e-13  # erg/cm^3
+        # If the cell's ISRF exceeds U=1, scale it down
+        if u_total > u_mathis:
+            scale_factor = u_mathis / u_total
+            u_lambda_input = u_lambda_input * scale_factor
+
     # ------------------------------------------------------------------
     # GENERATE SPECTRUM
     # ------------------------------------------------------------------
@@ -265,6 +282,7 @@ def _process_cell_task(args):
     lum_ion = spec_ion * norm_factor
     
     return lum_neu, lum_ion
+
 
 
 # ==========================================
@@ -342,7 +360,8 @@ def compute_grid_PAH_luminosity_SPA_parallel(cell_list, gsd, reg, simulation_siz
             n_H_this,           # Quantity [cm^-3]
             vol_this,           # Quantity [cm^3]
             sim_sizes_sliced,   # Quantity [cm]
-            f_ion_sliced        # Array (fraction)
+            f_ion_sliced,        # Array (fraction)
+            cfg.par.SKIP_LOGU_CALC  # bool — pass as data, not via cfg import
         )
         tasks.append(task_tuple)
 
@@ -460,7 +479,20 @@ def compute_grid_PAH_luminosity_SPA_serial(cell_list, gsd, reg, simulation_sizes
         print(f"  n_H:    {n_H[counter].value:.3e} cm^-3")
         print(f"  Total H atoms (n_H * Vol): {(n_H[counter].value * vol_cm3):.3e}")
 
-        
+
+        if cfg.par.SKIP_LOGU_CALC:
+            # Integrate u_lambda [erg/cm^4] over wavelength [cm] to get u_total [erg/cm^3]
+            u_total = np.trapz(cell_isrf_this.value, x=isrf_lam.to(u.cm).value)
+
+            # mMMP field energy density at U=1 (Draine 2011)
+            u_mathis = 8.64e-13  # erg/cm^3
+
+            # Cap: if the cell's ISRF exceeds U=1, scale it down
+            if u_total > u_mathis:
+                scale_factor = u_mathis / u_total
+                cell_isrf_this = cell_isrf_this * scale_factor
+
+                        
         # Generate the spectrum using pah_spec
         spectrum_neu, spectrum_ion = ps.generate_spectrum(
             wavelength_arr=isrf_lam,
