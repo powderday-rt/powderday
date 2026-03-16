@@ -15,7 +15,7 @@ setup(
         'numpy; python_version>="3.5"',
     ],
     install_requires=[
-        'scipy==1.2; python_version=="2.7"',
+        'scipy==1.10.0; python_version=="2.7"',
         'scipy; python_version>="3.5"',
         'astropy==2.0; python_version=="2.7"',
         'astropy; python_version>="3.5"',
