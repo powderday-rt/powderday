@@ -374,11 +374,17 @@ def newstars_gen(star_object):
     sp.params["add_neb_emission"] = False
     sp.params["add_agb_dust_model"] = cfg.par.add_agb_dust_model
 
+
     if cfg.par.CF_on == True:
         sp.params["dust_type"] = 0
         sp.params["dust1"] = 1
         sp.params["dust2"] = 0
         sp.params["dust_tesc"] = tesc_age
+        
+    if cfg.par.dust_screen == True:
+            sp.params["dust_type"]=0
+            sp.params["dust1"]=cfg.par.dust1
+            sp.params["dust2"]=cfg.par.dust2
 
     if cfg.par.alpha_enhance: #Setting Zstar based on Fe/H
         spec_noneb, mfrac_neb = alpha_enhance(star_object.all_metals[-1], star_object.fsps_zmet, star_object.age, tesc_age)
@@ -459,6 +465,24 @@ def newstars_gen(star_object):
             age_clusters = np.array(age_clusters)
             
         f = np.zeros(nlam)
+
+        if cfg.par.FORCE_gas_logz == False:
+            LogZ = np.log10(stars_list[i].metals/cfg.par.solar)
+        else:
+            LogZ = cfg.par.gas_logz
+        
+        if cfg.par.dust_screen == True:
+            sp.params["dust_type"]=0
+            sp.params["dust1"]=cfg.par.dust1
+            sp.params["dust2"]=cfg.par.dust2
+
+
+        if cfg.par.CF_on == True:
+            sp.params["dust_type"] = 0
+            sp.params["dust1"] = 1
+            sp.params["dust2"] = 0
+            sp.params["dust_tesc"] = tesc_age
+
 
         for j in range(len(cluster_mass)):
             num_HII_clusters = num_clusters[j]
@@ -793,6 +817,18 @@ def remove_stars_outside_grid(stars_list,bulgestars_list,diskstars_list,m):
             star_idx_to_remove.append(i)
             mass_removed += stars_list[i].mass
 
+
+#        if cfg.par.dust_screen == True:
+#            sp.params["dust_type"]=0
+#            sp.params["dust1"]=cfg.par.dust1
+#            sp.params["dust2"]=cfg.par.dust2
+
+
+#        if cfg.par.CF_on == True:
+#            sp.params["dust_type"] = 0
+#            sp.params["dust1"] = 1
+#            sp.params["dust2"] = 0
+#            sp.params["dust_tesc"] = tesc_age
 
 
         if (len(bulgestars_list) > 0):
