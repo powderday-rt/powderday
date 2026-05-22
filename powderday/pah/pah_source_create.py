@@ -251,8 +251,10 @@ def _process_cell_task(args):
         # mMMP field energy density at U=1 (Draine 2011)
         u_mathis = 8.64e-13  # erg/cm^3
         # If the cell's ISRF exceeds U=1, scale it down
-        if u_total > u_mathis:
-            scale_factor = u_mathis / u_total
+        
+        #100*u_mathis is to cap the Log_U value at 2 and not 0
+        if u_total > 100*u_mathis:
+            scale_factor = 100*u_mathis / u_total
             u_lambda_input = u_lambda_input * scale_factor
 
     # ------------------------------------------------------------------
