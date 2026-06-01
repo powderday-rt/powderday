@@ -221,7 +221,7 @@ def _process_cell_task(args):
      cell_vol,           # [cm^3] Cell volume
      sim_sizes,          # [cm] Simulation grain sizes (sliced to PAH bins)
      f_ion,              # [dimensionless] Ionization fraction (sliced)
-     skip_logu           # [bool] If True, cap ISRF at U=1 (mMMP field)
+     skip_logu           # [bool] If True, cap ISRF at U=100 or logU at 2 (mMMP field)
      ) = args     
 
     norm_factor = (n_H.value * cell_vol.value)
@@ -238,19 +238,23 @@ def _process_cell_task(args):
     cell_size_dist_ion = (gsd_slice.value / norm_factor) * f_ion.value
 
     # ------------------------------------------------------------------
-    # CAP ISRF AT U=1 (equivalent to SKIP_LOGU_CALC in non-SPA path)
+    # CAP ISRF AT U=100 (equivalent to SKIP_LOGU_CALC in non-SPA path)
     # ------------------------------------------------------------------
     # In the non-SPA Draine lookup table approach, SKIP_LOGU_CALC forces
     # logU=0 everywhere.  Here, the equivalent is to cap the integrated
-    # energy density at the mMMP (Mathis) field level U=1.  This
+    # energy density at the mMMP (Mathis) field level U=100.  This
     # preserves the spectral shape but prevents cells with very high
     # radiation fields from producing runaway PAH luminosity.
+
+	#For SPA functionality skip_logU = True will cap the radiation field at LogU = 2.
+	#For SPA skip_logU = False will not cap the logU value.
+	
     if skip_logu:
         # Integrate u_lambda [erg/cm^4] over wavelength [cm] -> u_total [erg/cm^3]
         u_total = np.trapz(u_lambda_input.value, x=wav_input.to(u.cm).value)
-        # mMMP field energy density at U=1 (Draine 2011)
+        # mMMP field energy density at U=100 (Draine 2011) (SPA not valid for logU < 2)
         u_mathis = 8.64e-13  # erg/cm^3
-        # If the cell's ISRF exceeds U=1, scale it down
+        # If the cell's ISRF exceeds U=100, scale it down
         
         #100*u_mathis is to cap the Log_U value at 2 and not 0
         if u_total > 100*u_mathis:
