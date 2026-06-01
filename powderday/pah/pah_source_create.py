@@ -246,8 +246,8 @@ def _process_cell_task(args):
     # preserves the spectral shape but prevents cells with very high
     # radiation fields from producing runaway PAH luminosity.
 
-	#For SPA functionality skip_logU = True will cap the radiation field at LogU = 2.
-	#For SPA skip_logU = False will not cap the logU value.
+	#For SPA functionality SKIP_LOGU_CALC = True will cap the radiation field at LogU = 2.
+	#For SPA SKIP_LOGU_CALC = False will not cap the logU value.
 	
     if skip_logu:
         # Integrate u_lambda [erg/cm^4] over wavelength [cm] -> u_total [erg/cm^3]
