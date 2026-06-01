@@ -252,7 +252,7 @@ def _process_cell_task(args):
     if skip_logu:
         # Integrate u_lambda [erg/cm^4] over wavelength [cm] -> u_total [erg/cm^3]
         u_total = np.trapz(u_lambda_input.value, x=wav_input.to(u.cm).value)
-        # mMMP field energy density at U=100 (Draine 2011) (SPA not valid for logU < 2)
+        # mMMP field energy density at U=100 (Draine 2011) (SPA not valid for logU > 2)
         u_mathis = 8.64e-13  # erg/cm^3
         # If the cell's ISRF exceeds U=100, scale it down
         
