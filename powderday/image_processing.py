@@ -82,7 +82,7 @@ def convolve(image_file, filterfilenames, filter_data):
                 # Apply appropriate transmissivities from filter file
                 image_data.append(np.average(images, axis=0, weights=weights))        
             # Save the image data and filter information as an .hdf5 file
-            f = h5py.File(cfg.model.PD_output_dir+f"convolved.inc.{inc}" +
+            f = h5py.File(cfg.model.PD_output_dir+f"convolved.inc{inc}." +
                           cfg.model.snapnum_str+".hdf5", "w")
             f.create_dataset("image_data", data=image_data)
             f['image_data'].attrs['width'] = w.value
