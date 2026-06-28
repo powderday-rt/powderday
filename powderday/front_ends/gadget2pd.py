@@ -269,7 +269,7 @@ def gadget_field_add(fname, bounding_box=None, ds=None,add_smoothed_quantities=T
         return data["PartType5", "Coordinates"]
 
     def _bhsed_nu(field, data):
-        bhluminosity = data["bhluminosity"]
+        bhluminosity = data["bh","luminosity"]
         log_lum_lsun = np.log10(bhluminosity[0].in_units("Lsun"))
         nu, bhlum = agn_spectrum(log_lum_lsun)
         # the last 4 numbers aren't part of the SED
@@ -280,7 +280,7 @@ def gadget_field_add(fname, bounding_box=None, ds=None,add_smoothed_quantities=T
         return nu
 
     def _bhsed_sed(field, data):
-        bhluminosity = data["bhluminosity"]
+        bhluminosity = data["bh","luminosity"]
         nholes = len(bhluminosity)
 
         # get len of nu just for the 0th hole so we know how long the vector is
@@ -526,12 +526,10 @@ def gadget_field_add(fname, bounding_box=None, ds=None,add_smoothed_quantities=T
                 if cfg.par.BH_var:
                     from powderday.agn_models.hickox import vary_bhluminosity
                     cfg.par.bhlfrac = vary_bhluminosity(nholes)
-
-                ds.add_field(("bh','luminosity"),function=_bhluminosity,sampling_type='particle',units='erg/s')
-                ds.add_field(("bh','coordinates"),function=_bhcoordinates,sampling_type='particle',units="cm")
-                ds.add_field(("bh','nu"),function=_bhsed_nu,sampling_type='particle',units='Hz')
-                ds.add_field(("bh','sed"),function=_bhsed_sed,sampling_type='particle',units="erg/s")
-                
+                ds.add_field(("bh","luminosity"),function=_bhluminosity,sampling_type='particle',units='erg/s')
+                ds.add_field(("bh","coordinates"),function=_bhcoordinates,sampling_type='particle',units="cm")
+                ds.add_field(("bh","nu"),function=_bhsed_nu,sampling_type='particle',units='Hz')
+                ds.add_field(("bh","sed"),function=_bhsed_sed,sampling_type='particle',units="erg/s")
 
 
             else:
