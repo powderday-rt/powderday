@@ -143,7 +143,8 @@ def arepo_m_gen(fname,field_add):
         #we call this total sizes, but thats a weird name thats a misnomer - its really just the total shape of the array, but is 3x the number of size bins!
         ntotalsizes = reg['PartType3','Dust_NumGrains'].shape[1]
 
-        #the first third are graphites; second third silicates; third third are aromatics/graphites ratio
+        #the first third are silicates; second third graphites; third third are aromatics/graphites ratio
+        #(ordering fixed in f5c0bba: "critical bug fix mixing up graphite and silicate ordering")
         grid_of_sizes = reg['PartType3','Dust_NumGrains'][:,0:int(ntotalsizes/3)] + reg['PartType3','Dust_NumGrains'][:,int(ntotalsizes/3):int(2*ntotalsizes/3)]
 
         if cfg.par.separate_into_dust_species:

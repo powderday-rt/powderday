@@ -898,18 +898,24 @@ def pah_source_add(ds,reg,m,boost):
 
     else:
 
-        
+        #hand the SPA engine the graphite grain counts only: the total
+        #grid_of_sizes includes silicates, which are not PAHs.  note we
+        #deliberately do NOT weight by the aromatic fraction here (unlike
+        #pah_grid_of_sizes used in the legacy engine above) -- for now all
+        #graphite grains in the pah_spec size bins are treated as PAHs.
+        spa_grid_of_sizes = ds.parameters['reg_grid_of_sizes_graphite']
+
         grid_PAH_luminosity, grid_neutral_PAH_luminosity, grid_ion_PAH_luminosity = compute_grid_PAH_luminosity_SPA_parallel(
-            cell_list, 
-            grid_of_sizes, 
-            reg, 
-            simulation_sizes, 
-            ds, 
-            draine_directories, 
+            cell_list,
+            spa_grid_of_sizes,
+            reg,
+            simulation_sizes,
+            ds,
+            draine_directories,
             f_ion
         )
-        
-        #grid_PAH_luminosity, grid_neutral_PAH_luminosity,grid_ion_PAH_luminosity = compute_grid_PAH_luminosity_SPA_serial(cell_list,grid_of_sizes,reg,simulation_sizes,ds,draine_directories,f_ion)
+
+        #grid_PAH_luminosity, grid_neutral_PAH_luminosity,grid_ion_PAH_luminosity = compute_grid_PAH_luminosity_SPA_serial(cell_list,spa_grid_of_sizes,reg,simulation_sizes,ds,draine_directories,f_ion)
         #get the units of wavelength back out - get the emission wavelengths
         temp_ps = pah_spec.PahSpec()
         SPA_emission_wavelengths = temp_ps.emission_wavelengths
