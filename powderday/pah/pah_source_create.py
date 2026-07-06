@@ -312,7 +312,15 @@ def compute_grid_PAH_luminosity_SPA_parallel(cell_list, gsd, reg, simulation_siz
     #Convert E_nu [erg/Hz] -> Energy Density u_nu [erg/cm^3/Hz]
     cell_vol = cell_sizes**3
     u_nu = cell_isrf.T / cell_vol
-    
+
+    # get_isrf now returns a per-bin quantity proportional to u_nu * Dnu
+    # (Dnu is proportional to nu on the log ISRF grid).  Divide by nu to
+    # recover the ambient spectral density before applying the c/lam^2
+    # Jacobian -- this mirrors the same correction get_logU makes in
+    # isrf_decompose.py.  Without it the field carries a spurious ~nu
+    # (~1/lam) FUV tilt on top of the (now-removed) kappa tilt.
+    u_nu = (u_nu.T / simulation_isrf_nu.to(u.Hz).value).T  # divide by nu VALUE (shape only; preserve units)
+
     # Convert u_nu [per Hz] -> u_lambda [per cm]
     lam = simulation_isrf_lam
     jacobian = constants.c / (lam**2)
@@ -420,8 +428,13 @@ def compute_grid_PAH_luminosity_SPA_serial(cell_list, gsd, reg, simulation_sizes
     u_nu = cell_isrf.T / cell_vol
     
     u_nu = u_nu.to(u.erg / u.cm**3 / u.Hz)
-    
-    # 2. Convert u_nu -> u_lambda 
+
+    # get_isrf returns a per-bin quantity ~ u_nu * Dnu (Dnu ~ nu on the log
+    # ISRF grid); divide by nu to recover the ambient spectral density
+    # before the Jacobian (mirrors get_logU; matches the parallel path).
+    u_nu = (u_nu.T / simulation_isrf_nu.to(u.Hz).value).T  # divide by nu VALUE (shape only; preserve units)
+
+    # 2. Convert u_nu -> u_lambda
     lam_cm = simulation_isrf_lam.to(u.cm)
     jacobian = constants.c / (lam_cm**2)
     cell_isrf_ergcm4 = u_nu.T * jacobian
