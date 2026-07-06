@@ -10,7 +10,7 @@ from astropy import constants as constants
 import powderday.config as cfg
 import pdb
 from tqdm import tqdm
-from powderday.pah.isrf_decompose import get_beta_nnls,get_isrf
+from powderday.pah.isrf_decompose import get_beta_nnls,get_isrf,get_u_lambda
 import os,glob
 import multiprocessing as mp
 from functools import partial
@@ -303,30 +303,16 @@ def compute_grid_PAH_luminosity_SPA_parallel(cell_list, gsd, reg, simulation_siz
     # ---------------------------------------------------------
     # 1. PREPARE ISRF
     # ---------------------------------------------------------
-    simulation_specific_energy_gsd_convolved, simulation_isrf_nu, simulation_isrf_lam = get_isrf(gsd, reg)
-    cell_isrf = simulation_specific_energy_gsd_convolved.cgs.value.T * u.erg / u.Hz
+    #get the per-cell radiation field energy density u_lambda
+    #[erg/cm^4] directly.  this is the complete inversion of the
+    #kappa-weighted, per-bin absorbed power that hyperion writes out
+    #(divides by kappa_abs per dust type, the actual bin widths dnu,
+    #and c; no dust-mass or cell-volume factors enter).  see
+    #get_u_lambda in isrf_decompose.py for the details.
+    cell_isrf_ergcm4, simulation_isrf_nu, simulation_isrf_lam = get_u_lambda()
 
     #convert yt-->astropy units
     cell_sizes = reg.parameters['cell_size'].in_units('cm').value * u.cm
-
-    #Convert E_nu [erg/Hz] -> Energy Density u_nu [erg/cm^3/Hz]
-    cell_vol = cell_sizes**3
-    u_nu = cell_isrf.T / cell_vol
-
-    # get_isrf now returns a per-bin quantity proportional to u_nu * Dnu
-    # (Dnu is proportional to nu on the log ISRF grid).  Divide by nu to
-    # recover the ambient spectral density before applying the c/lam^2
-    # Jacobian -- this mirrors the same correction get_logU makes in
-    # isrf_decompose.py.  Without it the field carries a spurious ~nu
-    # (~1/lam) FUV tilt on top of the (now-removed) kappa tilt.
-    u_nu = (u_nu.T / simulation_isrf_nu.to(u.Hz).value).T  # divide by nu VALUE (shape only; preserve units)
-
-    # Convert u_nu [per Hz] -> u_lambda [per cm]
-    lam = simulation_isrf_lam
-    jacobian = constants.c / (lam**2)
-    cell_isrf_ergcm4 = u_nu.T * jacobian
-    # Verify strict unit compliance 
-    cell_isrf_ergcm4 = cell_isrf_ergcm4.to(u.erg / u.cm**4)
 
     # ---------------------------------------------------------
     # 2. PREPARE DENSITY & CONSTANTS
@@ -415,31 +401,13 @@ def compute_grid_PAH_luminosity_SPA_serial(cell_list, gsd, reg, simulation_sizes
     n_pah_sizes = len(pah_spec.GRAIN_SIZES)
 
     
-    # Get the ISRF for all cells
-    simulation_specific_energy_gsd_convolved, simulation_isrf_nu, simulation_isrf_lam = get_isrf(gsd, reg)
+    # Get the radiation field energy density u_lambda [erg/cm^4] for
+    # all cells directly.  this is the complete inversion of the
+    # kappa-weighted, per-bin absorbed power that hyperion writes out
+    # (see get_u_lambda in isrf_decompose.py; matches the parallel path).
+    cell_isrf_ergcm4, simulation_isrf_nu, simulation_isrf_lam = get_u_lambda()
 
-    cell_isrf = simulation_specific_energy_gsd_convolved.cgs.T
     cell_sizes = reg.parameters['cell_size'].value * u.cm
-
-    
-    # 1. Convert E_nu [erg/Hz] -> Energy Density u_nu [erg/cm^3/Hz]
-    cell_vol = cell_sizes**3
-    cell_isrf = cell_isrf.value*u.erg/u.Hz
-    u_nu = cell_isrf.T / cell_vol
-    
-    u_nu = u_nu.to(u.erg / u.cm**3 / u.Hz)
-
-    # get_isrf returns a per-bin quantity ~ u_nu * Dnu (Dnu ~ nu on the log
-    # ISRF grid); divide by nu to recover the ambient spectral density
-    # before the Jacobian (mirrors get_logU; matches the parallel path).
-    u_nu = (u_nu.T / simulation_isrf_nu.to(u.Hz).value).T  # divide by nu VALUE (shape only; preserve units)
-
-    # 2. Convert u_nu -> u_lambda
-    lam_cm = simulation_isrf_lam.to(u.cm)
-    jacobian = constants.c / (lam_cm**2)
-    cell_isrf_ergcm4 = u_nu.T * jacobian
-
-    cell_isrf_ergcm4 = cell_isrf_ergcm4.to(u.erg / u.cm**4)
 
 
     # Initialize pah_spec
