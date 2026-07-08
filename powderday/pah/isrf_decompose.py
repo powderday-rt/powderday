@@ -310,15 +310,12 @@ def get_beta_nnls(draine_directories, gsd, simulation_sizes, reg):
     simulation_sizes = np.broadcast_to(simulation_sizes,(ncells,simulation_sizes.shape[0]))*u.micron
     gsd = gsd.value
 
-    Cabs_cation_regrid,Cabs_neutral_regrid = get_Cabs(draine_directories,simulation_sizes,gsd,simulation_isrf_lam)
-     
     if cfg.par.SKIP_LOGU_CALC == False:
-        #logU_grid = get_logU(simulation_specific_energy_sum_regrid,Cabs_cation_regrid,Cabs_neutral_regrid,draine_lam,simulation_isrf_lam,reg)
-        logU_grid = get_logU(simulation_specific_energy_gsd_convolved, 
-                             Cabs_cation_regrid, 
-                             Cabs_neutral_regrid, 
-                             simulation_isrf_lam, 
-                             reg)
+        #logU is computed from the per-cell spectral energy density
+        #(the complete inversion in get_u_lambda), independent of the
+        #Draine basis spectra and of any dust-mass or cell-size factors.
+        u_lambda_cells, u_lambda_nu, u_lambda_lam = get_u_lambda()
+        logU_grid = get_logU(u_lambda_cells, u_lambda_lam)
     else:
         print("[pah/isrf_decompose:] SKIP_LOGU_CALC is set to True: Assuming logU across the grid is 0")
         logU_grid = np.zeros(ncells)
@@ -354,8 +351,20 @@ def get_beta_nnls(draine_directories, gsd, simulation_sizes, reg):
 
 
     
+    #nnls (via asarray_chkfinite) rejects ANY non-finite entry and would
+    #otherwise abort the entire RT run.  The kappa-divided simulation
+    #specific-energy grid can carry inf/nan in zero-opacity or zero-density
+    #size bins (more common with the mass-weighted otf_extinction partition,
+    #where some size bins hold no dust).  Under PAH_SPA this whole beta_nnls
+    #/ logU result is diagnostic-only (the SPA luminosity path never consumes
+    #it), so zero the non-finite entries (no radiative contribution): finite
+    #cells are numerically unchanged, and any resulting all-zero cell yields
+    #beta=0, which pah_source_add already renormalizes (nan -> 1/N).
+    A_nnls = np.nan_to_num(np.asarray(x.T), nan=0.0, posinf=0.0, neginf=0.0)
+
     for i in tqdm(range(ncells)):
-        beta_nnls[:,i] = nnls(x.T,y[:,i])[0]
+        b_nnls = np.nan_to_num(np.asarray(y[:,i]), nan=0.0, posinf=0.0, neginf=0.0)
+        beta_nnls[:,i] = nnls(A_nnls,b_nnls)[0]
         isrf_lum = np.trapz(simulation_specific_energy_sum_regrid[:,i]/draine_lam,draine_lam)
         nnls_lum = np.trapz(np.dot(x.T,beta_nnls[:,i])/draine_lam[0:idx],draine_lam[0:idx])
         beta_nnls[:,i]*=isrf_lum.value/nnls_lum.value
@@ -364,31 +373,42 @@ def get_beta_nnls(draine_directories, gsd, simulation_sizes, reg):
     return beta_nnls,logU_grid
 
 
-def get_logU(cell_isrf, Cabs_cation, Cabs_neutral, lam, reg):
-    
-    cell_sizes = reg.parameters['cell_size'].value * u.cm
+def get_logU(u_lambda, lam):
+    """Per-cell radiation field intensity logU = log10(u_rad / u_Mathis).
 
-    #Convert ISRF (erg/s) -> Energy Density (erg/cm^3)
-    cell_isrf = (cell_isrf / (cell_sizes**2.))
-    cell_isrf /= (const.c * 4 * np.pi)
-    cell_isrf = cell_isrf.to(u.erg / u.cm**3)
-    
-    nu = (const.c / lam).to(u.Hz)
+    u_rad is the radiation energy density integrated over the starlight
+    band, 0.0912 - 8 micron (Draine & Li 2007): restricting to this band
+    keeps a cell's own thermal dust emission from contributing to U.
+    u_Mathis = 8.64e-13 erg/cm^3 is the energy density of the MMP83
+    interstellar radiation field (Draine 2011) -- the same reference the
+    SPA engines use for their radiation-field caps.
 
-    # The input cell_isrf acts as u_nu * nu (or similar), so we must divide by nu 
-    # to get the correct spectral density units (erg/cm^3/Hz) for the integral.
-    # We transpose to broadcast (n_cells, n_freq) / (n_freq) -> then transpose back.
-    cell_isrf = (cell_isrf.T / nu).T
+    Parameters
+    ----------
+    u_lambda : Quantity or array, [n_cells, n_lam], erg/cm^4
+        Per-cell spectral energy density (see get_u_lambda).
+    lam : Quantity, [n_lam], any length unit
+        Wavelengths corresponding to u_lambda's second axis.
 
-    h_ref = 1.958e-12 * u.erg / u.s 
-    
-    y = cell_isrf * const.c * Cabs_neutral / h_ref
-    
-    U = np.abs(np.trapz(y, nu, axis=0)).decompose()
+    Returns
+    -------
+    logU : ndarray [n_cells]
+    """
+    u_mathis = 8.64e-13  # erg/cm^3, MMP83 field (Draine 2011)
 
-    U[U <= 0] = 1.e-10
-    U[U >= 1e4] = 1.e4
-    
-    logU = np.log10(U)
+    lam_cm = lam.to(u.cm).value
+    lam_um = lam.to(u.micron).value
+    u_lam = u_lambda.to(u.erg / u.cm**4).value \
+        if hasattr(u_lambda, "to") else np.asarray(u_lambda)
 
-    return logU
+    #integrate over the starlight band, in ascending wavelength order
+    order = np.argsort(lam_cm)
+    band = order[(lam_um[order] >= 0.0912) & (lam_um[order] <= 8.)]
+    u_tot = np.trapz(u_lam[:, band], lam_cm[band], axis=1)  # erg/cm^3
+
+    U = u_tot / u_mathis
+    #positivity floor so the log is defined for cells the radiation
+    #field never reached
+    U[U <= 0] = 1.e-30
+
+    return np.log10(U)
