@@ -10,7 +10,7 @@ from astropy import constants as constants
 import powderday.config as cfg
 import pdb
 from tqdm import tqdm
-from powderday.pah.isrf_decompose import get_beta_nnls,get_isrf
+from powderday.pah.isrf_decompose import get_beta_nnls,get_isrf,get_u_lambda
 import os,glob
 import multiprocessing as mp
 from functools import partial
@@ -543,12 +543,14 @@ def compute_grid_PAH_luminosity_SPA_serial(cell_list, gsd, reg, simulation_sizes
             # Integrate u_lambda [erg/cm^4] over wavelength [cm] to get u_total [erg/cm^3]
             u_total = np.trapz(cell_isrf_this.value, x=isrf_lam.to(u.cm).value)
 
-            # mMMP field energy density at U=1 (Draine 2011)
+            # mMMP field energy density (Draine 2011); the SPA model is
+            # valid up to logU = 2, so cap at U = 100 (matching the
+            # parallel engine)
             u_mathis = 8.64e-13  # erg/cm^3
 
-            # Cap: if the cell's ISRF exceeds U=1, scale it down
-            if u_total > u_mathis:
-                scale_factor = u_mathis / u_total
+            # Cap: if the cell's ISRF exceeds U=100, scale it down
+            if u_total > 100*u_mathis:
+                scale_factor = 100*u_mathis / u_total
                 cell_isrf_this = cell_isrf_this * scale_factor
 
                         
@@ -732,16 +734,17 @@ def pah_source_add(ds,reg,m,boost):
 
 
     #compute the PAH mass
-    #first set the dust density as 2.4 g/cm**3 (the assumed density) 
+    #first set the dust density as 2.4 g/cm**3 (the assumed density)
     dust_density = np.ones(grid_of_sizes.shape)*ds.quan(cfg.par.dust_density,'g/cm**3')
-    mass_per_bin = dust_density* np.pi * 3./4 * unyt_array.from_astropy(simulation_sizes.to(u.cm))**3 * (ds.parameters['reg_grid_of_sizes_graphite']*ds.parameters['reg_grid_of_sizes_aromatic_fraction'])
+    #grain mass = (4/3) pi a^3 rho for spherical grains
+    mass_per_bin = dust_density* 4./3. * np.pi * unyt_array.from_astropy(simulation_sizes.to(u.cm))**3 * (ds.parameters['reg_grid_of_sizes_graphite']*ds.parameters['reg_grid_of_sizes_aromatic_fraction'])
     #ensure mass_per_bin is in g since we'll lose the unit later
     mass_per_bin = mass_per_bin.in_units('g')
-    
-    #pah_idx = np.where(simulation_sizes.to(u.angstrom).value <= 13) #this is the sizes q_pah usually measures; 1000 carbon atoms and eq. 22 of Hensley and Draine
-    #mass_per_bin_only_pah_idx = np.zeros(mass_per_bin.shape)
-    #mass_per_bin_only_pah_idx[:,pah_idx]=mass_per_bin[:,pah_idx]
-    m_pah = ds.arr(np.sum(mass_per_bin,axis=1),'g')
+
+    #q_pah counts only the PAH-size grains: a <= 13 Angstrom (~1000 C
+    #atoms; Hensley & Draine 2023, eq. 22)
+    pah_idx = simulation_sizes.to(u.angstrom).value <= 13.
+    m_pah = ds.arr(np.sum(mass_per_bin[:,pah_idx],axis=1),'g')
     reg.parameters['m_pah'] = m_pah
     q_pah = m_pah.in_units('g')/reg['dust','mass'].in_units('g')
     #in case we have an errant cell with no dust information (super rare corner case)
@@ -774,9 +777,22 @@ def pah_source_add(ds,reg,m,boost):
     draine_lam = temp_PAH_list[0].lam*u.micron
 
 
-    #get the logU and beta_nnls for the local ISRF
-    beta_nnls,logU = get_beta_nnls(draine_directories,grid_of_sizes,simulation_sizes,reg)
-    #just sto save it through analytics
+    #get the logU (and, for the Draine-template engine, the NNLS
+    #decomposition of the radiation field onto the Draine basis spectra).
+    #the SPA engine never consumes the basis decomposition, so in that
+    #case we skip the expensive NNLS entirely and just compute the
+    #(diagnostic) logU directly from the spectral energy density.
+    if cfg.par.PAH_SPA == False:
+        beta_nnls,logU = get_beta_nnls(draine_directories,grid_of_sizes,simulation_sizes,reg)
+    else:
+        beta_nnls = None
+        if cfg.par.SKIP_LOGU_CALC == False:
+            u_lambda_cells, u_lambda_nu, u_lambda_lam = get_u_lambda()
+            logU = get_logU(u_lambda_cells, u_lambda_lam)
+        else:
+            print("[pah/pah_source_create:] SKIP_LOGU_CALC is set to True: Assuming logU across the grid is 0")
+            logU = np.zeros(grid_of_sizes.shape[0])
+    #save it through analytics
     reg.parameters['logU'] = logU
     
     #read in a single draine directory, get the files, and from this
@@ -861,8 +877,10 @@ def pah_source_add(ds,reg,m,boost):
     #to low photon count) we can have beta_nnls for the whole cell is
     #0.  then, due to the normalization of beta_nnls in get_beta_nnls,
     #this means NaNs.  so we take those cells and assume equipartition
-    #in the draine basis functions.
-    beta_nnls[np.isnan(beta_nnls)] = 1./beta_nnls.shape[0]
+    #in the draine basis functions.  (beta_nnls is None when the SPA
+    #engine is active, since the basis decomposition is skipped.)
+    if beta_nnls is not None:
+        beta_nnls[np.isnan(beta_nnls)] = 1./beta_nnls.shape[0]
 
 
 
@@ -1140,9 +1158,12 @@ TESTING IT MAY BE WORTH RE-INTRODUCING.
     reg.parameters['simulation_sizes'] = simulation_sizes
 
 
-    #just for funzies save the beta
-    for i in range(beta_nnls.shape[1]): beta_nnls[:,i]/=np.max(beta_nnls[:,i])
-    reg.parameters['beta_nnls'] = beta_nnls
+    #save the (peak-normalised) basis decomposition when it was computed;
+    #the SPA engine skips it, and analytics falls back gracefully when
+    #the key is absent.
+    if beta_nnls is not None:
+        for i in range(beta_nnls.shape[1]): beta_nnls[:,i]/=np.max(beta_nnls[:,i])
+        reg.parameters['beta_nnls'] = beta_nnls
 
     #-------------------------------------------------------------------
     #The emission of the PAH-size grains is represented by the point
