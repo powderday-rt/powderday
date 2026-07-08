@@ -25,14 +25,11 @@ def active_dust_add(ds,m,grid_of_sizes,nsizes,dustdens,specific_energy,refined=[
         ds.parameters['reg_grid_of_sizes_silicate'] = grid_of_sizes_silicates
         ds.parameters['reg_grid_of_sizes_aromatic_fraction'] = grid_of_sizes_aromatic_fraction
 
-        #for empty cells, use the median size distribution
-        for isize in range(nsizes):
-                wzero = np.where(grid_of_sizes[:,isize] == 0)[0]
-                wnonzero = np.where(grid_of_sizes[:,isize] != 0)[0]
-                
-                grid_of_sizes[wzero,isize] = np.median(grid_of_sizes[wnonzero,isize])
-                
-                print(len(wzero)/len(wnonzero))
+        #empty size bins are intentionally left at zero here.  cells
+        #that carry dust mass but have no resolved grain-size
+        #distribution are handled below at the fraction level, where
+        #they fall back to the grid-integrated size distribution so
+        #their dust mass is still partitioned across bins and conserved.
 
 
         #now load the mapping between grain bin and filename for the lookup table
@@ -99,20 +96,23 @@ def active_dust_add(ds,m,grid_of_sizes,nsizes,dustdens,specific_energy,refined=[
                         debug_nearest_extinction_curve[i] = dsf_interp
 
 
-                #set up the frac array that is nbins big.  this is the
-                #fractional contribution of each dust file bin which is based
-                #on the total number of grains in the grid in that bin.
-                frac = grid_sum/np.sum(grid_sum)
+                #the forced MRN distribution is a grain-number
+                #distribution (dn per size bin) and is spatially
+                #uniform, so convert it to a dust-mass fraction per
+                #size bin (mass ~ dn * a^3) and give every cell that
+                #same size partition.
+                a_bin3 = (10.**grain_size_left_edge_array)**3.
+                bin_mass = dsf_grid[0,:] * a_bin3
+                frac = bin_mass/np.sum(bin_mass)
 
-                #now we need to set the localized extinction law. we do
-                #this by comparing, fractionally, a given cell's number of
-                #grains in that bin to the maximum number of grains that
-                #the grid has in that bin.
-                
                 for i in range(nbins):
-                        frac_grid[:,i] = dsf_grid[:,i]/np.max(dsf_grid[:,i])*frac[i]
-            
-                
+                        frac_grid[:,i] = frac[i]
+
+                #in an octree the refined (parent) cells carry no
+                #density, so make sure they are never assigned any dust.
+                if np.sum(refined) > 0:
+                        frac_grid[np.asarray(refined) != 0,:] = 0.
+
                 '''
                 import matplotlib.pyplot as plt
                 fig = plt.figure()
@@ -134,51 +134,39 @@ def active_dust_add(ds,m,grid_of_sizes,nsizes,dustdens,specific_energy,refined=[
         else:
 
 
-                grid_sum = np.zeros(nbins)
+                #each hyperion dust type corresponds to a single grain-size
+                #bin, so a cell's total dust density has to be divided
+                #among the bins according to how much of the cell's dust
+                #mass lives at each size.  the grid stores grain *counts*,
+                #and the mass in a bin is proportional to N * a^3, so the
+                #per-cell size distribution is the grain count weighted by
+                #a^3.  a single grain material density is assumed and
+                #cancels in the per-cell normalisation below.
+                a_micron = 10.**x
+                bin_size_idx = np.asarray(dust_file_to_grain_size_mapping_idx)
+                a_bin3 = (a_micron[bin_size_idx])**3.
 
+                grain_counts = grid_of_sizes[:,bin_size_idx]
+                cell_mass = grain_counts * a_bin3[None,:]
 
-                #this sets the fraction of each bin size we need (for the
-                #entire grid!)
-                for i in range(nbins):
-                        grid_sum[i] = np.sum(grid_of_sizes[:,dust_file_to_grain_size_mapping_idx[i]])
+                #normalise within each cell so the size fractions sum
+                #to one and the cell's total dust mass is conserved.
+                cell_mass_total = np.sum(cell_mass,axis=1)
+                nonempty = cell_mass_total > 0
 
+                #grid-integrated mass fraction per size bin, used both
+                #as a reference and as the fallback size distribution
+                #for cells that carry dust mass but have no resolved
+                #grain sizes (so their mass is still partitioned).
+                frac = np.sum(cell_mass,axis=0) / np.sum(cell_mass)
 
-                #set up the frac array that is nbins big.  this is the
-                #fractional contribution of each dust file bin which is based
-                #on the total number of grains in the grid in that bin.
-                frac = grid_sum/np.sum(grid_sum)
+                frac_grid[nonempty,:]  = cell_mass[nonempty,:] / cell_mass_total[nonempty,None]
+                frac_grid[~nonempty,:] = frac
 
-            
-                #now we need to set the localized extinction law. we do
-                #this by comparing, fractionally, a given cell's number of
-                #grains in that bin to the maximum number of grains that
-                #the grid has in that bin.
-                
-                #this block tests if we're in an octree or not (i.e., we
-                #could be in a voronoi mesh, in which case refined doesn't
-                #mean anything).  this is necessary since for an octree we
-                #don't want to worry about the Trues
-
-
+                #in an octree the refined (parent) cells carry no
+                #density, so make sure they are never assigned any dust.
                 if np.sum(refined) > 0:
-                        wFalse = np.where(np.asarray(refined) == 0)[0]
-                
-                        for i in range(nbins):
-                                frac_grid[wFalse,i] = grid_of_sizes[:,dust_file_to_grain_size_mapping_idx[i]]/np.max(grid_of_sizes[:,dust_file_to_grain_size_mapping_idx[i]])*frac[i]
-                else:
-                        #we take the fractioal grain size distribution
-                        #from each size bin, and multiply it by the
-                        #cells in each grid (weighted by the ratio of
-                        #the logarithm of the actual number of grains
-                        #in that bin in that cell to the log of the
-                        #cell with the most grains in that bin).
-                        for i in range(nbins):
-                                frac_grid[:,i] = np.log10(grid_of_sizes[:,dust_file_to_grain_size_mapping_idx[i]])/np.max(np.log10(grid_of_sizes[:,dust_file_to_grain_size_mapping_idx[i]]))*frac[i]
-                                
-                #we can get cases where the denominator in the
-                #frac_grid assignment is the log10(1) which causes infs/nans that propagate throughout
-                frac_grid[np.isinf(frac_grid)] = 0
-                frac_grid[np.isnan(frac_grid)] = 0
+                        frac_grid[np.asarray(refined) != 0,:] = 0.
 
         #now add the dust grids to hyperion
         for bin in range(nbins):
