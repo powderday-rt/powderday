@@ -291,6 +291,51 @@ def _process_cell_task(args):
 
 
 
+def _check_pah_spec_size_alignment(simulation_sizes, n_pah_sizes):
+    """Verify the first n_pah_sizes simulation grain-size bins line up
+    with pah_spec.GRAIN_SIZES.
+
+    The SPA engines slice the grain size distribution positionally
+    (gsd[:, 0:n_pah_sizes]) with no interpolation, so the first bins of
+    the simulation size grid must be exactly the sizes the pah_spec
+    basis spectra were computed for.  pah_spec's 'pd' branch hardcodes
+
+        GRAIN_SIZES = 10**(linspace(log10(0.0004), 0, 16)[0:3]) micron
+
+    i.e. 4.00, 6.74, 11.35 Angstrom -- the first three bins of a 16-bin
+    log grid over 0.0004--1 micron.  A parameter file with, e.g., the
+    old default otf_extinction_log_min_size = -4 would otherwise
+    silently hand pah_spec the grain counts of the 1.0/1.85/3.4
+    Angstrom bins.
+    """
+    sim = simulation_sizes[0:n_pah_sizes].to(u.micron).value
+    expected = pah_spec.GRAIN_SIZES.to(u.micron).value
+
+    if len(sim) < n_pah_sizes or not np.allclose(sim, expected, rtol=1.e-3):
+        raise ValueError(
+            "[pah_source_create/SPA]: the first %d simulation grain size bins "
+            "(%s micron) do not match pah_spec.GRAIN_SIZES (%s micron), so the "
+            "PAH spectra would be computed with the wrong grains' abundances. "
+            "The simulation size grid is 10**linspace(otf_extinction_log_min_size, "
+            "otf_extinction_log_max_size, nsizes), where nsizes comes from the "
+            "snapshot (Dust_NumGrains.shape[1]/3) and min/max are set in "
+            "parameters_master.py. For the pah_spec 'pd' branch, set in "
+            "parameters_master.py:\n"
+            "    otf_extinction_log_min_size = %.5f  # log10(0.0004 micron)\n"
+            "    otf_extinction_log_max_size = 0\n"
+            "and the snapshot must have 16 size bins per species (0.0004--1 "
+            "micron log grid). IMPORTANT: min/max must also match the grid the "
+            "hydro simulation actually used -- if your snapshot uses a "
+            "different grid, do not change these parameters to silence this "
+            "error; instead regenerate pah_spec's GRAIN_SIZES/basis spectra "
+            "for your simulation's first %d size bins."
+            % (n_pah_sizes,
+               np.array2string(sim, precision=5),
+               np.array2string(expected, precision=5),
+               np.log10(4.e-4),
+               n_pah_sizes))
+
+
 # ==========================================
 # PARALLEL DRIVER FUNCTION (Part 3/3)
 # ==========================================
@@ -299,6 +344,10 @@ def compute_grid_PAH_luminosity_SPA_parallel(cell_list, gsd, reg, simulation_siz
 
     #The number of PAH sizes considered by pah_spec
     n_pah_sizes = len(pah_spec.GRAIN_SIZES)
+
+    #fail loudly if the simulation size grid doesn't line up with the
+    #sizes the pah_spec basis spectra were computed for
+    _check_pah_spec_size_alignment(simulation_sizes, n_pah_sizes)
 
     # ---------------------------------------------------------
     # 1. PREPARE ISRF
@@ -406,7 +455,11 @@ def compute_grid_PAH_luminosity_SPA_serial(cell_list, gsd, reg, simulation_sizes
 
     n_pah_sizes = len(pah_spec.GRAIN_SIZES)
 
-    
+    #fail loudly if the simulation size grid doesn't line up with the
+    #sizes the pah_spec basis spectra were computed for
+    _check_pah_spec_size_alignment(simulation_sizes, n_pah_sizes)
+
+
     # Get the ISRF for all cells
     simulation_specific_energy_gsd_convolved, simulation_isrf_nu, simulation_isrf_lam = get_isrf(gsd, reg)
 
@@ -917,18 +970,24 @@ def pah_source_add(ds,reg,m,boost):
 
     else:
 
-        
+        #hand the SPA engine the graphite grain counts only: the total
+        #grid_of_sizes includes silicates, which are not PAHs.  note we
+        #deliberately do NOT weight by the aromatic fraction here (unlike
+        #pah_grid_of_sizes used in the legacy engine above) -- for now all
+        #graphite grains in the pah_spec size bins are treated as PAHs.
+        spa_grid_of_sizes = ds.parameters['reg_grid_of_sizes_graphite']
+
         grid_PAH_luminosity, grid_neutral_PAH_luminosity, grid_ion_PAH_luminosity = compute_grid_PAH_luminosity_SPA_parallel(
-            cell_list, 
-            grid_of_sizes, 
-            reg, 
-            simulation_sizes, 
-            ds, 
-            draine_directories, 
+            cell_list,
+            spa_grid_of_sizes,
+            reg,
+            simulation_sizes,
+            ds,
+            draine_directories,
             f_ion
         )
-        
-        #grid_PAH_luminosity, grid_neutral_PAH_luminosity,grid_ion_PAH_luminosity = compute_grid_PAH_luminosity_SPA_serial(cell_list,grid_of_sizes,reg,simulation_sizes,ds,draine_directories,f_ion)
+
+        #grid_PAH_luminosity, grid_neutral_PAH_luminosity,grid_ion_PAH_luminosity = compute_grid_PAH_luminosity_SPA_serial(cell_list,spa_grid_of_sizes,reg,simulation_sizes,ds,draine_directories,f_ion)
         #get the units of wavelength back out - get the emission wavelengths
         temp_ps = pah_spec.PahSpec()
         SPA_emission_wavelengths = temp_ps.emission_wavelengths
