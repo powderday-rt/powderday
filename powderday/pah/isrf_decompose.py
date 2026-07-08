@@ -228,8 +228,20 @@ def get_beta_nnls(draine_directories, gsd, simulation_sizes, reg):
 
 
     
+    #nnls (via asarray_chkfinite) rejects ANY non-finite entry and would
+    #otherwise abort the entire RT run.  The kappa-divided simulation
+    #specific-energy grid can carry inf/nan in zero-opacity or zero-density
+    #size bins (more common with the mass-weighted otf_extinction partition,
+    #where some size bins hold no dust).  Under PAH_SPA this whole beta_nnls
+    #/ logU result is diagnostic-only (the SPA luminosity path never consumes
+    #it), so zero the non-finite entries (no radiative contribution): finite
+    #cells are numerically unchanged, and any resulting all-zero cell yields
+    #beta=0, which pah_source_add already renormalizes (nan -> 1/N).
+    A_nnls = np.nan_to_num(np.asarray(x.T), nan=0.0, posinf=0.0, neginf=0.0)
+
     for i in tqdm(range(ncells)):
-        beta_nnls[:,i] = nnls(x.T,y[:,i])[0]
+        b_nnls = np.nan_to_num(np.asarray(y[:,i]), nan=0.0, posinf=0.0, neginf=0.0)
+        beta_nnls[:,i] = nnls(A_nnls,b_nnls)[0]
         isrf_lum = np.trapz(simulation_specific_energy_sum_regrid[:,i]/draine_lam,draine_lam)
         nnls_lum = np.trapz(np.dot(x.T,beta_nnls[:,i])/draine_lam[0:idx],draine_lam[0:idx])
         beta_nnls[:,i]*=isrf_lum.value/nnls_lum.value
