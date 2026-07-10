@@ -184,8 +184,28 @@ def get_u_lambda():
 
     #E_bin is [n_nu, n_dust, n_cells]
     E_bin = np.array(dset['specific_energy_nu'])
+    scalar = np.array(dset['specific_energy'])
     f.close()
     E_bin[~np.isfinite(E_bin)] = 0.
+
+    #sanitize the frequency-resolved array against corrupted elements:
+    #physically, no single frequency bin can carry more absorbed power
+    #than the bolometric (scalar) specific energy of the same dust type
+    #and cell, since the scalar is the sum over bins.  isolated elements
+    #violating this bound by many orders of magnitude have been traced
+    #to uninitialized-memory values in the file and would otherwise
+    #propagate into unphysically luminous PAH point sources.
+    try:
+        bound = scalar.reshape(E_bin.shape[1:])[None, ...] * (1. + 1.e-3)
+        bad = E_bin > bound
+        if bad.any():
+            print("[pah/isrf_decompose]: WARNING: zeroing %d "
+                  "specific_energy_nu elements that exceed the bolometric "
+                  "bound (corrupt frequency-resolved data)" % int(bad.sum()))
+            E_bin[bad] = 0.
+    except ValueError:
+        print("[pah/isrf_decompose]: WARNING: could not apply the "
+              "bolometric sanity bound (unexpected specific_energy shape)")
 
     #read the absorption opacity of each dust type from the same dust
     #files that were handed to hyperion.  the ISRF frequency bins are
@@ -219,6 +239,18 @@ def get_u_lambda():
 
     E_sum = np.sum(E_bin, axis=1)                #[n_nu, n_cells], erg/s/g
     kappa_eff = np.dot(kappa_abs.T, present)     #[n_nu, n_cells], cm^2/g
+
+    #floor the opacity at a small fraction of each cell's own spectral
+    #peak before inverting.  in cells whose present dust types have a
+    #negligible opacity at some frequencies (e.g. only very small grains,
+    #which are nearly transparent in the far-infrared), the deposited
+    #energy there is Monte Carlo noise, and dividing it by a vanishing
+    #opacity would amplify that noise into unphysically large radiation
+    #fields (and, downstream, PAH point-source luminosities).  the same
+    #protection, with the same threshold, is used on the per-type
+    #opacities in get_isrf.
+    kappa_eff = np.maximum(kappa_eff,
+                           1.e-3 * kappa_eff.max(axis=0, keepdims=True))
 
     fourpi_Jnu_dnu = np.zeros(E_sum.shape)
     w = kappa_eff > 0
