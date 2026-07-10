@@ -94,14 +94,48 @@ def get_isrf(gsd,reg):
 
     ncells = grid_dust_masses.shape[0]
 
+    # -----------------------------------------------------------------
+    # DIVIDE OUT THE DUST ABSORPTION OPACITY.
+    # Hyperion's specific_energy_nu is an ABSORBED quantity, per dust
+    # type d:  specific_energy_nu[nu,d] = kappa_abs,d(nu) * c*u_nu*Dnu.
+    # Feeding it to pah_spec as if it were the ambient field u_lambda
+    # over-weights the FUV (kappa rises steeply to the UV) and biases the
+    # aging trend.  We recover the ambient field by dividing each
+    # dust-type slice by that type's kappa_abs(nu) BEFORE the GSD
+    # convolution -- every type then yields the same u_nu, so the
+    # number-weighting no longer skews the result toward small grains.
+    # kappa_abs = chi*(1-albedo) is read from the SAME per-bin dust files,
+    # in the SAME order, that tributary_dust_add used to build the n_dust
+    # axis (via binned_dust_sizes.npz['outfile_filenames']).
+    # NB: the per-bin Dnu (proportional to nu on the log ISRF grid) is
+    # removed downstream in the SPA conversion, mirroring get_logU.
+    # -----------------------------------------------------------------
+    _dust_npz = np.load(cfg.model.PD_output_dir + '/dust_files/binned_dust_sizes.npz')
+    _dust_files = _dust_npz['outfile_filenames']
+    _nu_grid = simulation_isrf_nu.to(u.Hz).value
+    kappa_abs = np.empty([len(_nu_grid), len(_dust_files)])
+    for _d, _fn in enumerate(_dust_files):
+        _fn = _fn.decode() if isinstance(_fn, bytes) else str(_fn)
+        _op = h5py.File(_fn, 'r')['optical_properties'][:]
+        _nn = np.asarray(_op['nu'], float)
+        _order = np.argsort(_nn)
+        _kabs = np.asarray(_op['chi'], float) * (1. - np.asarray(_op['albedo'], float))
+        kappa_abs[:, _d] = np.interp(_nu_grid, _nn[_order], _kabs[_order])
+    assert kappa_abs.shape[1] == simulation_specific_energy_sum.shape[1], \
+        "[get_isrf] kappa_abs n_dust (%d) != specific_energy_nu n_dust (%d)" % (
+            kappa_abs.shape[1], simulation_specific_energy_sum.shape[1])
+    # floor kappa to tame MC-noise blow-up where kappa_abs -> 0 (far-IR)
+    kappa_floor = np.maximum(kappa_abs, 1.e-3 * kappa_abs.max(axis=0, keepdims=True))
+    specific_energy_ambient = simulation_specific_energy_sum.value / kappa_floor[:, :, None]
+
     #convolve the simulation specific energy (ISRF) with the GSD to
     #get rid of the size dimension:
     simulation_specific_energy_gsd_convolved = np.zeros([simulation_specific_energy_sum.shape[0],simulation_specific_energy_sum.shape[2]])
 
-    print("[isrf_decompose/get_beta_nnls]: Convolving the simulation specific energy grid with the dust types")
+    print("[isrf_decompose/get_beta_nnls]: Convolving the (kappa-divided) specific energy grid with the dust types")
     for i in tqdm(range(ncells)):
-        #x = simulation_specific_energy_sum[:,:,i]
-        simulation_specific_energy_gsd_convolved[:,i] = np.dot(simulation_specific_energy_sum[:,:,i],gsd[i,:])
+        #x = specific_energy_ambient[:,:,i]  (kappa_abs already divided out)
+        simulation_specific_energy_gsd_convolved[:,i] = np.dot(specific_energy_ambient[:,:,i],gsd[i,:])
         simulation_specific_energy_gsd_convolved[:,i]/=np.sum(gsd[i,:])
 
     simulation_specific_energy_gsd_convolved *= u.erg/u.s #attach units back to it
@@ -150,8 +184,28 @@ def get_u_lambda():
 
     #E_bin is [n_nu, n_dust, n_cells]
     E_bin = np.array(dset['specific_energy_nu'])
+    scalar = np.array(dset['specific_energy'])
     f.close()
     E_bin[~np.isfinite(E_bin)] = 0.
+
+    #sanitize the frequency-resolved array against corrupted elements:
+    #physically, no single frequency bin can carry more absorbed power
+    #than the bolometric (scalar) specific energy of the same dust type
+    #and cell, since the scalar is the sum over bins.  isolated elements
+    #violating this bound by many orders of magnitude have been traced
+    #to uninitialized-memory values in the file and would otherwise
+    #propagate into unphysically luminous PAH point sources.
+    try:
+        bound = scalar.reshape(E_bin.shape[1:])[None, ...] * (1. + 1.e-3)
+        bad = E_bin > bound
+        if bad.any():
+            print("[pah/isrf_decompose]: WARNING: zeroing %d "
+                  "specific_energy_nu elements that exceed the bolometric "
+                  "bound (corrupt frequency-resolved data)" % int(bad.sum()))
+            E_bin[bad] = 0.
+    except ValueError:
+        print("[pah/isrf_decompose]: WARNING: could not apply the "
+              "bolometric sanity bound (unexpected specific_energy shape)")
 
     #read the absorption opacity of each dust type from the same dust
     #files that were handed to hyperion.  the ISRF frequency bins are
@@ -185,6 +239,18 @@ def get_u_lambda():
 
     E_sum = np.sum(E_bin, axis=1)                #[n_nu, n_cells], erg/s/g
     kappa_eff = np.dot(kappa_abs.T, present)     #[n_nu, n_cells], cm^2/g
+
+    #floor the opacity at a small fraction of each cell's own spectral
+    #peak before inverting.  in cells whose present dust types have a
+    #negligible opacity at some frequencies (e.g. only very small grains,
+    #which are nearly transparent in the far-infrared), the deposited
+    #energy there is Monte Carlo noise, and dividing it by a vanishing
+    #opacity would amplify that noise into unphysically large radiation
+    #fields (and, downstream, PAH point-source luminosities).  the same
+    #protection, with the same threshold, is used on the per-type
+    #opacities in get_isrf.
+    kappa_eff = np.maximum(kappa_eff,
+                           1.e-3 * kappa_eff.max(axis=0, keepdims=True))
 
     fourpi_Jnu_dnu = np.zeros(E_sum.shape)
     w = kappa_eff > 0

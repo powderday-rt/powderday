@@ -352,22 +352,16 @@ def compute_grid_PAH_luminosity_SPA_parallel(cell_list, gsd, reg, simulation_siz
     # ---------------------------------------------------------
     # 1. PREPARE ISRF
     # ---------------------------------------------------------
-    simulation_specific_energy_gsd_convolved, simulation_isrf_nu, simulation_isrf_lam = get_isrf(gsd, reg)
-    cell_isrf = simulation_specific_energy_gsd_convolved.cgs.value.T * u.erg / u.Hz
+    #get the per-cell radiation field energy density u_lambda
+    #[erg/cm^4] directly.  this is the complete inversion of the
+    #kappa-weighted, per-bin absorbed power that hyperion writes out
+    #(divides by kappa_abs per dust type, the actual bin widths dnu,
+    #and c; no dust-mass or cell-volume factors enter).  see
+    #get_u_lambda in isrf_decompose.py for the details.
+    cell_isrf_ergcm4, simulation_isrf_nu, simulation_isrf_lam = get_u_lambda()
 
     #convert yt-->astropy units
     cell_sizes = reg.parameters['cell_size'].in_units('cm').value * u.cm
-
-    #Convert E_nu [erg/Hz] -> Energy Density u_nu [erg/cm^3/Hz]
-    cell_vol = cell_sizes**3
-    u_nu = cell_isrf.T / cell_vol
-    
-    # Convert u_nu [per Hz] -> u_lambda [per cm]
-    lam = simulation_isrf_lam
-    jacobian = constants.c / (lam**2)
-    cell_isrf_ergcm4 = u_nu.T * jacobian
-    # Verify strict unit compliance 
-    cell_isrf_ergcm4 = cell_isrf_ergcm4.to(u.erg / u.cm**4)
 
     # ---------------------------------------------------------
     # 2. PREPARE DENSITY & CONSTANTS
@@ -460,26 +454,13 @@ def compute_grid_PAH_luminosity_SPA_serial(cell_list, gsd, reg, simulation_sizes
     _check_pah_spec_size_alignment(simulation_sizes, n_pah_sizes)
 
 
-    # Get the ISRF for all cells
-    simulation_specific_energy_gsd_convolved, simulation_isrf_nu, simulation_isrf_lam = get_isrf(gsd, reg)
+    # Get the radiation field energy density u_lambda [erg/cm^4] for
+    # all cells directly.  this is the complete inversion of the
+    # kappa-weighted, per-bin absorbed power that hyperion writes out
+    # (see get_u_lambda in isrf_decompose.py; matches the parallel path).
+    cell_isrf_ergcm4, simulation_isrf_nu, simulation_isrf_lam = get_u_lambda()
 
-    cell_isrf = simulation_specific_energy_gsd_convolved.cgs.T
     cell_sizes = reg.parameters['cell_size'].value * u.cm
-
-    
-    # 1. Convert E_nu [erg/Hz] -> Energy Density u_nu [erg/cm^3/Hz]
-    cell_vol = cell_sizes**3
-    cell_isrf = cell_isrf.value*u.erg/u.Hz
-    u_nu = cell_isrf.T / cell_vol
-    
-    u_nu = u_nu.to(u.erg / u.cm**3 / u.Hz)
-    
-    # 2. Convert u_nu -> u_lambda 
-    lam_cm = simulation_isrf_lam.to(u.cm)
-    jacobian = constants.c / (lam_cm**2)
-    cell_isrf_ergcm4 = u_nu.T * jacobian
-
-    cell_isrf_ergcm4 = cell_isrf_ergcm4.to(u.erg / u.cm**4)
 
 
     # Initialize pah_spec
@@ -779,9 +760,9 @@ def pah_source_add(ds,reg,m,boost):
 
     #get the logU (and, for the Draine-template engine, the NNLS
     #decomposition of the radiation field onto the Draine basis spectra).
-    #the SPA engine never consumes the basis decomposition, so in that
-    #case we skip the expensive NNLS entirely and just compute the
-    #(diagnostic) logU directly from the spectral energy density.
+    #the SPA engine computes its own radiation field with get_u_lambda
+    #and never consumes the basis decomposition, so in that case we skip
+    #the expensive NNLS entirely and just compute logU directly.
     if cfg.par.PAH_SPA == False:
         beta_nnls,logU = get_beta_nnls(draine_directories,grid_of_sizes,simulation_sizes,reg)
     else:
@@ -1186,10 +1167,11 @@ TESTING IT MAY BE WORTH RE-INTRODUCING.
     #is computed with the full LTE dust model.
     #
     #Which bins count as PAH-size depends on the engine: the SPA engine
-    #covers exactly the first len(pah_spec.GRAIN_SIZES) bins, while the
-    #Draine-template engine represents the PAH population, i.e. grains
-    #smaller than the standard 13 Angstrom PAH cutoff (~1000 C atoms;
-    #Hensley & Draine 2023, eq. 22).
+    #covers exactly the first len(pah_spec.GRAIN_SIZES) bins (enforced
+    #by _check_pah_spec_size_alignment above), while the Draine-template
+    #engine represents the PAH population, i.e. grains smaller than the
+    #standard 13 Angstrom PAH cutoff (~1000 C atoms; Hensley & Draine
+    #2023, eq. 22).
     try:
         if cfg.par.PAH_SPA:
             n_pah_sizes = len(pah_spec.GRAIN_SIZES)
