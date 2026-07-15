@@ -1147,31 +1147,19 @@ TESTING IT MAY BE WORTH RE-INTRODUCING.
         reg.parameters['beta_nnls'] = beta_nnls
 
     #-------------------------------------------------------------------
-    #The emission of the PAH-size grains is represented by the point
-    #sources added above (computed by either engine).  Those same
-    #grain-size bins also exist in the model as their own per-size dust
-    #species: m.dust holds the hyperion dust objects that
-    #tributary_dust_add passed to m.add_density_grid, one per size bin
-    #in bin order, and each carries an LTE emissivity table that is
-    #written into the radiative transfer input file when the model is
-    #next written out.  With those tables in place, the final RT stage
-    #would thermally re-emit the energy the PAH-size bins absorb in
-    #addition to the point-source PAH emission -- counting the same
-    #absorbed energy twice.  To prevent that, we zero the LTE emissivity
-    #tables of the PAH-size bins here: the grains keep their opacity
-    #(they still attenuate the radiation field), but their emission
-    #comes solely from the PAH point sources.  hyperion handles a
-    #zero-emissivity dust species by simply not re-emitting the energy
-    #it absorbs.  Note the ordering: the ISRF stage has already run by
-    #this point, so the radiation field that sets the PAH luminosities
-    #is computed with the full LTE dust model.
-    #
-    #Which bins count as PAH-size depends on the engine: the SPA engine
-    #covers exactly the first len(pah_spec.GRAIN_SIZES) bins (enforced
-    #by _check_pah_spec_size_alignment above), while the Draine-template
-    #engine represents the PAH population, i.e. grains smaller than the
-    #standard 13 Angstrom PAH cutoff (~1000 C atoms; Hensley & Draine
-    #2023, eq. 22).
+    #The PAH-size bins' emission is carried by the point sources added
+    #above, so zero out their LTE emission for the final RT stage lest
+    #the absorbed energy be double counted (the grains keep their
+    #opacity and still attenuate).  An identically zero emissivity
+    #table is unsafe: hyperion normalizes each column into a PDF, and
+    #0/0 = NaN crashes monochromatic emission.  Instead we park all the
+    #emission in the two longest-wavelength samples (~1 cm, beyond any
+    #wavelength powderday outputs; two adjacent nonzero samples keep
+    #the log-log integral positive).  PAH-size means the first
+    #len(pah_spec.GRAIN_SIZES) bins (SPA engine) or all bins below the
+    #13 Angstrom PAH cutoff (Draine-template engine).  The ISRF stage
+    #has already run, so the PAH luminosities themselves were computed
+    #with the full LTE dust model.
     try:
         if cfg.par.PAH_SPA:
             n_pah_sizes = len(pah_spec.GRAIN_SIZES)
@@ -1180,11 +1168,17 @@ TESTING IT MAY BE WORTH RE-INTRODUCING.
                 simulation_sizes.to(u.angstrom).value <= 13.))
         for ibin in range(n_pah_sizes):
             emis = m.dust[ibin].emissivities
-            emis.jnu = np.zeros_like(emis.jnu)
-        print("[pah/pah_source_create]: zeroed the LTE emissivities of the "
-              "first %d (PAH-size) dust bins for the final RT stage so their "
-              "emission comes only from the PAH point sources" % n_pah_sizes)
+            jnu_parked = np.zeros_like(emis.jnu)
+            jnu_parked[0:2, :] = 1.0   # the two lowest-nu rows of (n_nu, n_var)
+            emis.jnu = jnu_parked
+        print("[pah/pah_source_create]: suppressed the LTE emissivities of "
+              "the first %d (PAH-size) dust bins for the final RT stage "
+              "(emission parked at the long-wavelength edge of the "
+              "emissivity grid) so their emission at all science "
+              "wavelengths comes only from the PAH point sources"
+              % n_pah_sizes)
     except Exception as e:
-        print("[pah/pah_source_create]: WARNING: could not zero the PAH-bin "
-              "emissivities (%r); the final RT will double count the PAH "
-              "grain emission (LTE thermal + PAH point sources)" % (e,))
+        print("[pah/pah_source_create]: WARNING: could not suppress the "
+              "PAH-bin emissivities (%r); the final RT will double count "
+              "the PAH grain emission (LTE thermal + PAH point sources)"
+              % (e,))
