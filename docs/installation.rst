@@ -25,7 +25,7 @@ Overview of Requirements
 * **Additional Packages (with Instructions Below)**
   
   * git  <http://git-scm.com/>
-  * powderday <https://github.com/dnarayanan/powderday.git>
+  * powderday <https://github.com/powderday-rt/powderday.git>
   * yt <http://yt-project.org>
   * python-fsps <https://dfm.io/python-fsps/current/>
   * Hyperion <http://www.hyperion-rt.org/>
@@ -49,11 +49,11 @@ linked below in each subsection).
 python
 --------------
 
-`powderday <https://github.com/dnarayanan/powderday.git>`_ should work with python >=3.5 though is ideal with 3.8 (and some issues have been noted that may relate to python 3.7).
+`powderday <https://github.com/powderday-rt/powderday.git>`_ should work with python >=3.5 though is ideal with 3.8 (and some issues have been noted that may relate to python 3.7).
 Please file an issue if you encounter one.
 
 We very strongly recommend that the user set up a new python environment for the
-`powderday <https://github.com/dnarayanan/powderday.git>`_ installation to avoid software conflicts.   This could look something like (assuming a ``conda`` installation of python)::
+`powderday <https://github.com/powderday-rt/powderday.git>`_ installation to avoid software conflicts.   This could look something like (assuming a ``conda`` installation of python)::
 
   >conda create --name pd_environment
   >source activate pd_environment
@@ -74,7 +74,7 @@ powderday
 
 Simply clone the latest and greatest from the repo::
 
-  >git clone https://github.com/dnarayanan/powderday.git
+  >git clone https://github.com/powderday-rt/powderday.git
 
 To install, `cd` into the cloned repository and run the usual::
 
@@ -91,7 +91,7 @@ Hyperion
 --------------
 
 `Hyperion <http://www.hyperion-rt.org>`_ is the main work horse of
-`powderday <https://github.com/dnarayanan/powderday.git>`_.  The full
+`powderday <https://github.com/powderday-rt/powderday.git>`_.  The full
 directions for installation are well-described on the main
 `Installation page for Hyperion
 <http://docs.hyperion-rt.org/en/stable/installation/installation.html>`_.
@@ -217,7 +217,7 @@ ship with `Hyperion <http://www.hyperion-rt.org>`_ due to their size).
   >python setup.py build_dust
 
 If you want to use the PAH model in `powderday
-<https://github.com/dnarayanan/powderday.git>`_, you'll additionally need
+<https://github.com/powderday-rt/powderday.git>`_, you'll additionally need
 these files in the same dust directory.  To download, click on the link,
 then click 'raw' on the right side of each page.
 
@@ -461,7 +461,7 @@ hyperion dust::
   
 powderday::
 
-  >git clone https://github.com/dnarayanan/powderday.git
+  >git clone https://github.com/powderday-rt/powderday.git
   >cd powderday
   >conda install numpy scipy cython h5py matplotlib psutil joblib six astropy scikit-learn ipython
   >python setup.py install
@@ -524,7 +524,7 @@ hyperion dust::
   
 powderday::
 
-  >git clone https://github.com/dnarayanan/powderday.git
+  >git clone https://github.com/powderday-rt/powderday.git
   >conda install numpy scipy cython h5py matplotlib psutil joblib six astropy scikit-learn ipython
   >cd powderday
   >python setup.py install
@@ -546,7 +546,7 @@ for these.::
   >python -m pip install fsps
   >[set $SPS_HOME variable in .bashrc)
   >cd $HOME
-  >git clone https://github.com/dnarayanan/powderday.git
+  >git clone https://github.com/powderday-rt/powderday.git
   >cd powderday
   >python setup.py install
 

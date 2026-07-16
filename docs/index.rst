@@ -9,7 +9,7 @@
 
 Welcome to Powderday's documentation!
 =====================================
-`powderday <https://github.com/dnarayanan/powderday.git>`_ is a dust
+`powderday <https://github.com/powderday-rt/powderday.git>`_ is a dust
 radiative transfer package designed to interface with galaxy formation
 simulations in order to produce realistic spectral energy
 distributions and images. The code utilizes `fsps <https://code.google.com/p/fsps/source/checkout>`_ (and its python

@@ -1,13 +1,13 @@
 How to Reference `powderday
-<https://github.com/dnarayanan/powderday.git>`_)
+<https://github.com/powderday-rt/powderday.git>`_)
 
 **********
 
 
-`powderday <https://github.com/dnarayanan/powderday.git>`_) is built on a
+`powderday <https://github.com/powderday-rt/powderday.git>`_) is built on a
 number of dependency packages, and we therefore ask that you please
 cite these code papers if using `powderday
-<https://github.com/dnarayanan/powderday.git>`_). Thanks!
+<https://github.com/powderday-rt/powderday.git>`_). Thanks!
 
 1. `yt
 <http://yt-project.org>`_ `Turk et al. 2011

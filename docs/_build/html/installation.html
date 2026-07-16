@@ -63,7 +63,7 @@
 <li><p><strong>Additional Packages (with Instructions Below)</strong></p>
 <ul>
 <li><p>git  &lt;<a class="reference external" href="http://git-scm.com/">http://git-scm.com/</a>&gt;</p></li>
-<li><p>powderday &lt;<a class="reference external" href="https://github.com/dnarayanan/powderday.git">https://github.com/dnarayanan/powderday.git</a>&gt;</p></li>
+<li><p>powderday &lt;<a class="reference external" href="https://github.com/powderday-rt/powderday.git">https://github.com/powderday-rt/powderday.git</a>&gt;</p></li>
 <li><p>yt &lt;<a class="reference external" href="http://yt-project.org">http://yt-project.org</a>&gt;</p></li>
 <li><p>FSPS &lt;<a class="reference external" href="https://code.google.com/p/fsps/source/checkout">https://code.google.com/p/fsps/source/checkout</a>&gt;</p></li>
 <li><p>python-fsps &lt;<a class="reference external" href="http://dan.iel.fm/python-fsps/current/">http://dan.iel.fm/python-fsps/current/</a>&gt;</p></li>
@@ -85,12 +85,12 @@ linked below in each subsection).</p>
 </div>
 <div class="section" id="python">
 <span id="id1"></span><h3>python<a class="headerlink" href="#python" title="Permalink to this headline">¶</a></h3>
-<p><a class="reference external" href="https://github.com/dnarayanan/powderday.git">powderday</a> should work with python &gt;=2.7 or &gt;=3.5, but has not been heavily used under &gt;=3.5.
+<p><a class="reference external" href="https://github.com/powderday-rt/powderday.git">powderday</a> should work with python &gt;=2.7 or &gt;=3.5, but has not been heavily used under &gt;=3.5.
 Please file an issue if you encounter one.</p>
-<p>As you will see, <a class="reference external" href="https://github.com/dnarayanan/powderday.git">powderday</a>
+<p>As you will see, <a class="reference external" href="https://github.com/powderday-rt/powderday.git">powderday</a>
 currently requires a particular branch of <a class="reference external" href="http://yt-project.org">yt</a>. As a result, one path that we have seen work
 well for users is to set up a different python environment for the
-<a class="reference external" href="https://github.com/dnarayanan/powderday.git">powderday</a> installation.   This could look something like (assuming a <code class="docutils literal notranslate"><span class="pre">conda</span></code> installation of python):</p>
+<a class="reference external" href="https://github.com/powderday-rt/powderday.git">powderday</a> installation.   This could look something like (assuming a <code class="docutils literal notranslate"><span class="pre">conda</span></code> installation of python):</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">&gt;</span><span class="n">conda</span> <span class="n">create</span> <span class="o">--</span><span class="n">name</span> <span class="n">pd_environment</span>
 <span class="o">&gt;</span><span class="n">source</span> <span class="n">activate</span> <span class="n">pd_environment</span>
 </pre></div>
@@ -116,14 +116,14 @@ python, and not conflict with any of your other installed packages.</p>
 <p><a class="reference external" href="http://yt-project.org">yt</a> 3.x comes bundled with
 <a class="reference external" href="http://www.hyperion-rt.org">Hyperion</a>, so it is not necessary to install it
 on its own. However, as of Summer 2019, development has begun on making
-<a class="reference external" href="https://github.com/dnarayanan/powderday.git">powderday</a> use
+<a class="reference external" href="https://github.com/powderday-rt/powderday.git">powderday</a> use
 <a class="reference external" href="http://yt-project.org">yt</a> 4.x, the ‘demeshed’
 version of <a class="reference external" href="http://yt-project.org">yt</a>. The
-<a class="reference external" href="https://github.com/dnarayanan/powderday.git">powderday</a> -
+<a class="reference external" href="https://github.com/powderday-rt/powderday.git">powderday</a> -
 <a class="reference external" href="http://yt-project.org">yt</a> 4.x update is in its early stages and is not
 expected to function properly just yet. That being said, development is taking
 place on the <code class="docutils literal notranslate"><span class="pre">pd-4.x</span></code> branch of
-<a class="reference external" href="https://github.com/dnarayanan/powderday.git">powderday</a>, and instructions for
+<a class="reference external" href="https://github.com/powderday-rt/powderday.git">powderday</a>, and instructions for
 setting it up to run with
 <a class="reference external" href="http://yt-project.org">yt</a> 4.x are at the bottom of this section.</p>
 </div>
@@ -144,7 +144,7 @@ setting it up to run with
 </div>
 <p>if <code class="docutils literal notranslate"><span class="pre">gcc</span></code> is version 4.3.0 or higher. This can be checked with
 <code class="docutils literal notranslate"><span class="pre">gcc</span> <span class="pre">--version</span></code>. Additionally, at this time
-<a class="reference external" href="https://github.com/dnarayanan/powderday.git">powderday</a>  doesn’t work with the
+<a class="reference external" href="https://github.com/powderday-rt/powderday.git">powderday</a>  doesn’t work with the
 default MIST Isochrones.  To fix this, you’ll need to edit sps_vars.f90 in
 <a class="reference external" href="https://code.google.com/p/fsps/source/checkout">fsps</a>  to look like:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>!------set the isochrone library------!
@@ -177,7 +177,7 @@ default MIST Isochrones.  To fix this, you’ll need to edit sps_vars.f90 in
 <div class="section" id="id25">
 <span id="id26"></span><h3>Hyperion<a class="headerlink" href="#id25" title="Permalink to this headline">¶</a></h3>
 <p><a class="reference external" href="http://www.hyperion-rt.org">Hyperion</a> is the main work horse of
-<a class="reference external" href="https://github.com/dnarayanan/powderday.git">powderday</a>.  The full
+<a class="reference external" href="https://github.com/powderday-rt/powderday.git">powderday</a>.  The full
 directions for installation are well-described on the main
 <a class="reference external" href="http://docs.hyperion-rt.org/en/stable/installation/installation.html">Installation page for Hyperion</a>.
 Here, we summarize the installation which should get most users
@@ -186,7 +186,7 @@ through without any real difficulty.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">&gt;</span><span class="n">conda</span> <span class="n">install</span> <span class="o">-</span><span class="n">c</span> <span class="n">conda</span><span class="o">-</span><span class="n">forge</span> <span class="n">hyperion</span>
 </pre></div>
 </div>
-<p>Note, this will eventually become deprecated for <a class="reference external" href="https://github.com/dnarayanan/powderday.git">powderday</a> (or at least modified as
+<p>Note, this will eventually become deprecated for <a class="reference external" href="https://github.com/powderday-rt/powderday.git">powderday</a> (or at least modified as
 the <a class="reference external" href="http://www.hyperion-rt.org">Hyperion</a> <code class="docutils literal notranslate"><span class="pre">conda</span></code> install ships
 with <a class="reference external" href="http://yt-project.org">yt 3.x</a>, and eventual upgrade to <a class="reference external" href="http://yt-project.org">yt
 4.x</a> is coming in Summer 2019.</p>
@@ -276,7 +276,7 @@ install:</p>
 <span class="o">&gt;</span><span class="n">python</span> <span class="n">setup</span><span class="o">.</span><span class="n">py</span> <span class="n">build_dust</span>
 </pre></div>
 </div>
-<p>If you want to use the PAH model in <a class="reference external" href="https://github.com/dnarayanan/powderday.git">powderday</a>, you’ll additionally need
+<p>If you want to use the PAH model in <a class="reference external" href="https://github.com/powderday-rt/powderday.git">powderday</a>, you’ll additionally need
 these files in the same dust directory.  To download, click on the link,
 then click ‘raw’ on the right side of each page.</p>
 <ol class="arabic simple">
@@ -297,10 +297,10 @@ transition from 3.x to 4.x. The latter offers a number of advantages
 including a demeshed handling of particle datasets, as well as an
 <a class="reference external" href="https://www.h-its.org/2014/10/28/arepo/">arepo</a> front end.  We are
 happy to announce that as of December 31st, 2019 via hash
-<a class="reference external" href="https://github.com/dnarayanan/powderday/commit/59315f311535b5f2309c705f5a71519148aa4f29">59315f311535b5f2309c705f5a71519148aa4f29</a>,
-<a class="reference external" href="https://github.com/dnarayanan/powderday.git">powderday</a> is now <a class="reference external" href="http://yt-project.org">yt</a> 4.x compliant.</p>
+<a class="reference external" href="https://github.com/powderday-rt/powderday/commit/59315f311535b5f2309c705f5a71519148aa4f29">59315f311535b5f2309c705f5a71519148aa4f29</a>,
+<a class="reference external" href="https://github.com/powderday-rt/powderday.git">powderday</a> is now <a class="reference external" href="http://yt-project.org">yt</a> 4.x compliant.</p>
 <p>The following offer documentation for installing <a class="reference external" href="http://yt-project.org">yt</a> 4.x, as well as a slightly different order
-of operations for <a class="reference external" href="https://github.com/dnarayanan/powderday.git">powderday</a> code dependency
+of operations for <a class="reference external" href="https://github.com/powderday-rt/powderday.git">powderday</a> code dependency
 installation.  Please note, <a class="reference external" href="http://yt-project.org">yt</a> 4.x is still
 in development mode, and should be treated as such.  The following
 documentation utilizes not-yet-merged in branches of <a class="reference external" href="http://yt-project.organological">yt</a> for example, and all 4.x features
@@ -311,7 +311,7 @@ should be considered experimental currently.</p>
 <span class="o">&gt;</span> <span class="n">conda</span> <span class="n">activate</span> <span class="n">pd4env</span>
 </pre></div>
 </div>
-<p>Our entire goal here is to install <a class="reference external" href="https://github.com/dnarayanan/powderday.git">powderday</a>  that is dependent on <a class="reference external" href="http://yt-project.org">yt</a> 4.x.  Since <a class="reference external" href="http://www.hyperion-rt.org">Hyperion</a> comes with
+<p>Our entire goal here is to install <a class="reference external" href="https://github.com/powderday-rt/powderday.git">powderday</a>  that is dependent on <a class="reference external" href="http://yt-project.org">yt</a> 4.x.  Since <a class="reference external" href="http://www.hyperion-rt.org">Hyperion</a> comes with
 <a class="reference external" href="http://yt-project.org">yt</a> 3.x,  we a few options, neither of which are particularly elegant.</p>
 <p>The easiest way to handle this is to install <a class="reference external" href="http://www.hyperion-rt.org">Hyperion</a>  as normal, via:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">&gt;</span><span class="n">conda</span> <span class="n">install</span> <span class="o">-</span><span class="n">c</span> <span class="n">conda</span><span class="o">-</span><span class="n">forge</span> <span class="n">hyperion</span>
@@ -362,7 +362,7 @@ needs, <em>except</em> <a class="reference external" href="http://yt-project.org
 </pre></div>
 </div>
 <p>Now, install clone the 4.x development branch from the <a class="reference external" href="http://yt-project.org">yt</a> 4.x as above.</p>
-<p>As long as the rest of <a class="reference external" href="https://github.com/dnarayanan/powderday.git">powderday</a> ‘s
+<p>As long as the rest of <a class="reference external" href="https://github.com/powderday-rt/powderday.git">powderday</a> ‘s
 dependencies have been installed, at this point you should be good to go.</p>
 </div>
 </div>

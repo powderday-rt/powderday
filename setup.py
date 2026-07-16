@@ -28,6 +28,6 @@ setup(
     ],
     scripts=["pd_front_end.py"],
     project_urls={
-        'Source': 'https://github.com/dnarayanan/powderday.git',
+        'Source': 'https://github.com/powderday-rt/powderday.git',
     },
 )
