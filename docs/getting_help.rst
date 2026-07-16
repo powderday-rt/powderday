@@ -2,7 +2,7 @@ Getting Help
 **********
 
 Please feel free to file an issue on the `github page
-<https://github.com/dnarayanan/powderday/issues?`_ if you have an
+<https://github.com/powderday-rt/powderday/issues?`_ if you have an
 issue or even a simple use question!  We will tag and sort them
 appropriately.  This issue tracker will serve as a repository for old
 questions as well.

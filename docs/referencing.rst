@@ -1,7 +1,7 @@
 Referencing
 **********
 
-If you use `powderday <https://github.com/dnarayanan/powderday.git>`_, we
+If you use `powderday <https://github.com/powderday-rt/powderday.git>`_, we
 would definitely appreciate a hat tip toward the following papers that
 describe software that we depend on.  We suggest either the following
 paragraph, or some variant.
