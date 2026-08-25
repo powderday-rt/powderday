@@ -75,7 +75,7 @@ def get_Cabs(draine_directories, simulation_sizes, gsd, target_lam):
     return Cabs_cation_regrid_lam_cells, Cabs_neutral_regrid_lam_cells
 
 
-def get_isrf(gsd,reg):
+def get_isrf(gsd,reg,ds=None):
     #get the wavelengths of the simulation
     f = h5py.File(cfg.model.outputfile + '_isrf.sed')
     
@@ -91,6 +91,67 @@ def get_isrf(gsd,reg):
 
     #clip values that are MC noise too high
     simulation_specific_energy_sum[simulation_specific_energy_sum.value > 1.e50] = np.median(simulation_specific_energy_sum)
+
+    #dust_file_writer may split each size bin into per-species dust types
+    #(graphite, silicate), flattened size-major: i_size*n_species+i_species.
+    #the size-distribution weighting below expects one dust type per size
+    #bin, so collapse the species axis first.  each species slice carries
+    #that species' opacity-weighted field, so the collapse is a per-cell
+    #average over species weighted by the cell's own grain counts in that
+    #size bin -- i.e. the field weighted by the local graphite/silicate
+    #blend.  this reduces to a no-op when the dust files are single-species.
+    _dust_data = np.load(cfg.model.PD_output_dir + '/dust_files/binned_dust_sizes.npz')
+    n_species = int(_dust_data['n_species']) if 'n_species' in _dust_data.files else 1
+    if n_species > 1:
+        n_nu_isrf, n_dust, ncells_isrf = simulation_specific_energy_sum.shape
+        n_sizes = n_dust // n_species
+        assert n_dust == n_sizes * n_species, \
+            "[get_isrf] n_dust (%d) is not a multiple of n_species (%d)" % (n_dust, n_species)
+        #per-cell species weights, in the same species order as the dust
+        #files; fall back to equal weights if any species' per-cell size
+        #grid is unavailable (non-species-resolved front ends).  the size
+        #grids are registered on the parameters of the dataset the grid
+        #was built from -- the ds argument -- which can be a different
+        #instance from reg.ds, so prefer it and fall back to the region.
+        _species_grid_keys = {'graphite': 'reg_grid_of_sizes_graphite',
+                              'silicate': 'reg_grid_of_sizes_silicate'}
+        _param_sources = [_p for _p in
+                          (getattr(ds, 'parameters', None),
+                           getattr(reg, 'parameters', None),
+                           getattr(getattr(reg, 'ds', None), 'parameters', None))
+                          if _p is not None]
+        w = np.ones([ncells_isrf, n_sizes, n_species])
+        _have_all_species_grids = True
+        for _i_sp, _sp in enumerate(_dust_data['species_order']):
+            _sp = _sp.decode() if isinstance(_sp, bytes) else str(_sp)
+            _key = _species_grid_keys.get(_sp)
+            _g = None
+            if _key is not None:
+                for _params in _param_sources:
+                    if _key in _params:
+                        _g = _params[_key]
+                        break
+            _g = np.asarray(getattr(_g, 'value', _g), dtype=float) if _g is not None else None
+            if _g is not None and _g.ndim == 2 and _g.shape == (ncells_isrf, n_sizes):
+                w[:, :, _i_sp] = _g
+            else:
+                _have_all_species_grids = False
+                print("[isrf_decompose/get_isrf]: species '%s' weight grid unusable: "
+                      "key=%s, found in %d of %d parameter dicts, shape=%s, expected=(%d, %d)"
+                      % (_sp, _key,
+                         sum(1 for _p in _param_sources if _key in _p), len(_param_sources),
+                         'None' if _g is None else str(_g.shape), ncells_isrf, n_sizes))
+        if not _have_all_species_grids:
+            print("[isrf_decompose/get_isrf]: per-cell species size grids unavailable; "
+                  "collapsing species-split dust types with equal weights")
+            w = np.ones([ncells_isrf, n_sizes, n_species])
+        #normalize over species per (cell, size); bins with no grains of
+        #either species get equal weights
+        _wsum = w.sum(axis=2, keepdims=True)
+        w = np.where(_wsum > 0, w / np.where(_wsum > 0, _wsum, 1.), 1. / n_species)
+        simulation_specific_energy_sum = (
+            simulation_specific_energy_sum.reshape(n_nu_isrf, n_sizes, n_species, ncells_isrf)
+            * w.transpose(1, 2, 0)[np.newaxis, :, :, :]).sum(axis=2)
 
     ncells = grid_dust_masses.shape[0]
 
@@ -109,9 +170,9 @@ def get_isrf(gsd,reg):
     return simulation_specific_energy_gsd_convolved,simulation_isrf_nu,simulation_isrf_lam
 
 
-def get_beta_nnls(draine_directories, gsd, simulation_sizes, reg):
+def get_beta_nnls(draine_directories, gsd, simulation_sizes, reg, ds=None):
 
-    simulation_specific_energy_gsd_convolved,simulation_isrf_nu,simulation_isrf_lam = get_isrf(gsd,reg)
+    simulation_specific_energy_gsd_convolved,simulation_isrf_nu,simulation_isrf_lam = get_isrf(gsd,reg,ds=ds)
     
     #we have read in the draine directories explicitly to ensure that the ordering of them is identical from pah_source_create
     isrf_files = []
@@ -229,9 +290,17 @@ def get_beta_nnls(draine_directories, gsd, simulation_sizes, reg):
 
     
     for i in tqdm(range(ncells)):
+        #cells whose regridded radiation field carries non-finite
+        #values cannot be decomposed; leave their coefficients at zero
+        #(the NNLS decomposition is diagnostic under the SPA engine).
+        if not np.all(np.isfinite(y[:,i])):
+            beta_nnls[:,i] = 0.
+            continue
         beta_nnls[:,i] = nnls(x.T,y[:,i])[0]
         isrf_lum = np.trapz(simulation_specific_energy_sum_regrid[:,i]/draine_lam,draine_lam)
         nnls_lum = np.trapz(np.dot(x.T,beta_nnls[:,i])/draine_lam[0:idx],draine_lam[0:idx])
+        if nnls_lum.value == 0 or not np.isfinite(nnls_lum.value):
+            continue
         beta_nnls[:,i]*=isrf_lum.value/nnls_lum.value
     
 

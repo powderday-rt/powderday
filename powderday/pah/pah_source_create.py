@@ -295,15 +295,44 @@ def _process_cell_task(args):
 # PARALLEL DRIVER FUNCTION (Part 3/3)
 # ==========================================
 
+def _check_pah_spec_size_alignment(simulation_sizes, n_pah_sizes):
+    """Verify the first n_pah_sizes simulation grain-size bins line up
+    with pah_spec.GRAIN_SIZES.
+
+    The SPA engines slice the grain size distribution positionally
+    (gsd[:, 0:n_pah_sizes]) with no interpolation, so the first bins of
+    the simulation size grid must be exactly the sizes the pah_spec
+    basis spectra were computed for."""
+    sim = simulation_sizes[0:n_pah_sizes].to(u.micron).value
+    expected = pah_spec.GRAIN_SIZES.to(u.micron).value
+
+    if len(sim) < n_pah_sizes or not np.allclose(sim, expected, rtol=1.e-3):
+        raise ValueError(
+            "[pah_source_create/SPA]: the first %d simulation grain size "
+            "bins (%s micron) do not match pah_spec.GRAIN_SIZES (%s "
+            "micron), so the PAH spectra would be computed with the wrong "
+            "grains' abundances. Set otf_extinction_log_min_size = %.5f "
+            "and otf_extinction_log_max_size = 0 in parameters_master.py "
+            "(16 size bins per species, 0.0004-1 micron log grid), or "
+            "regenerate the pah_spec basis spectra for your simulation's "
+            "size grid."
+            % (n_pah_sizes, np.array2string(sim, precision=5),
+               np.array2string(expected, precision=5), np.log10(4.e-4)))
+
+
 def compute_grid_PAH_luminosity_SPA_parallel(cell_list, gsd, reg, simulation_sizes, ds, draine_directories, f_ion):
 
     #The number of PAH sizes considered by pah_spec
     n_pah_sizes = len(pah_spec.GRAIN_SIZES)
 
+    #fail loudly if the simulation size grid doesn't line up with the
+    #sizes the pah_spec basis spectra were computed for
+    _check_pah_spec_size_alignment(simulation_sizes, n_pah_sizes)
+
     # ---------------------------------------------------------
     # 1. PREPARE ISRF
     # ---------------------------------------------------------
-    simulation_specific_energy_gsd_convolved, simulation_isrf_nu, simulation_isrf_lam = get_isrf(gsd, reg)
+    simulation_specific_energy_gsd_convolved, simulation_isrf_nu, simulation_isrf_lam = get_isrf(gsd, reg, ds=ds)
     cell_isrf = simulation_specific_energy_gsd_convolved.cgs.value.T * u.erg / u.Hz
 
     #convert yt-->astropy units
@@ -312,12 +341,11 @@ def compute_grid_PAH_luminosity_SPA_parallel(cell_list, gsd, reg, simulation_siz
     #Convert E_nu [erg/Hz] -> Energy Density u_nu [erg/cm^3/Hz]
     cell_vol = cell_sizes**3
     u_nu = cell_isrf.T / cell_vol
-    
+
     # Convert u_nu [per Hz] -> u_lambda [per cm]
     lam = simulation_isrf_lam
     jacobian = constants.c / (lam**2)
     cell_isrf_ergcm4 = u_nu.T * jacobian
-    # Verify strict unit compliance 
     cell_isrf_ergcm4 = cell_isrf_ergcm4.to(u.erg / u.cm**4)
 
     # ---------------------------------------------------------
@@ -406,27 +434,19 @@ def compute_grid_PAH_luminosity_SPA_serial(cell_list, gsd, reg, simulation_sizes
 
     n_pah_sizes = len(pah_spec.GRAIN_SIZES)
 
-    
-    # Get the ISRF for all cells
-    simulation_specific_energy_gsd_convolved, simulation_isrf_nu, simulation_isrf_lam = get_isrf(gsd, reg)
+    #fail loudly if the simulation size grid doesn't line up with the
+    #sizes the pah_spec basis spectra were computed for
+    _check_pah_spec_size_alignment(simulation_sizes, n_pah_sizes)
 
+    simulation_specific_energy_gsd_convolved, simulation_isrf_nu, simulation_isrf_lam = get_isrf(gsd, reg, ds=ds)
     cell_isrf = simulation_specific_energy_gsd_convolved.cgs.T
     cell_sizes = reg.parameters['cell_size'].value * u.cm
-
-    
-    # 1. Convert E_nu [erg/Hz] -> Energy Density u_nu [erg/cm^3/Hz]
     cell_vol = cell_sizes**3
-    cell_isrf = cell_isrf.value*u.erg/u.Hz
+    cell_isrf = cell_isrf.value * u.erg / u.Hz
     u_nu = cell_isrf.T / cell_vol
-    
     u_nu = u_nu.to(u.erg / u.cm**3 / u.Hz)
-    
-    # 2. Convert u_nu -> u_lambda 
-    lam_cm = simulation_isrf_lam.to(u.cm)
-    jacobian = constants.c / (lam_cm**2)
-    cell_isrf_ergcm4 = u_nu.T * jacobian
-
-    cell_isrf_ergcm4 = cell_isrf_ergcm4.to(u.erg / u.cm**4)
+    jacobian = constants.c / (simulation_isrf_lam**2)
+    cell_isrf_ergcm4 = (u_nu.T * jacobian).to(u.erg / u.cm**4)
 
 
     # Initialize pah_spec
@@ -722,7 +742,7 @@ def pah_source_add(ds,reg,m,boost):
 
 
     #get the logU and beta_nnls for the local ISRF
-    beta_nnls,logU = get_beta_nnls(draine_directories,grid_of_sizes,simulation_sizes,reg)
+    beta_nnls,logU = get_beta_nnls(draine_directories,grid_of_sizes,simulation_sizes,reg,ds=ds)
     #just sto save it through analytics
     reg.parameters['logU'] = logU
     
@@ -917,18 +937,23 @@ def pah_source_add(ds,reg,m,boost):
 
     else:
 
-        
+        #hand the SPA engine the graphite grain counts only: the total
+        #grid_of_sizes includes silicates, which are not PAHs.  all
+        #graphite grains in the pah_spec size bins are treated as PAHs
+        #(no aromatic-fraction weighting).
+        spa_grid_of_sizes = ds.parameters['reg_grid_of_sizes_graphite']
+
         grid_PAH_luminosity, grid_neutral_PAH_luminosity, grid_ion_PAH_luminosity = compute_grid_PAH_luminosity_SPA_parallel(
-            cell_list, 
-            grid_of_sizes, 
-            reg, 
-            simulation_sizes, 
-            ds, 
-            draine_directories, 
+            cell_list,
+            spa_grid_of_sizes,
+            reg,
+            simulation_sizes,
+            ds,
+            draine_directories,
             f_ion
         )
-        
-        #grid_PAH_luminosity, grid_neutral_PAH_luminosity,grid_ion_PAH_luminosity = compute_grid_PAH_luminosity_SPA_serial(cell_list,grid_of_sizes,reg,simulation_sizes,ds,draine_directories,f_ion)
+
+        #grid_PAH_luminosity, grid_neutral_PAH_luminosity,grid_ion_PAH_luminosity = compute_grid_PAH_luminosity_SPA_serial(cell_list,spa_grid_of_sizes,reg,simulation_sizes,ds,draine_directories,f_ion)
         #get the units of wavelength back out - get the emission wavelengths
         temp_ps = pah_spec.PahSpec()
         SPA_emission_wavelengths = temp_ps.emission_wavelengths
@@ -1081,6 +1106,43 @@ TESTING IT MAY BE WORTH RE-INTRODUCING.
     reg.parameters['simulation_sizes'] = simulation_sizes
 
 
-    #just for funzies save the beta 
+    #just for funzies save the beta
     for i in range(beta_nnls.shape[1]): beta_nnls[:,i]/=np.max(beta_nnls[:,i])
     reg.parameters['beta_nnls'] = beta_nnls
+
+    #-------------------------------------------------------------------
+    #The PAH-size bins' emission is carried by the point sources added
+    #above, so zero out their LTE emission for the final RT stage lest
+    #the absorbed energy be double counted (the grains keep their
+    #opacity and still attenuate).  An identically zero emissivity
+    #table is unsafe: hyperion normalizes each column into a PDF, and
+    #0/0 = NaN crashes monochromatic emission.  Instead we park all the
+    #emission in the two longest-wavelength samples (~1 cm, beyond any
+    #wavelength powderday outputs; two adjacent nonzero samples keep
+    #the log-log integral positive).  PAH-size means the first
+    #len(pah_spec.GRAIN_SIZES) bins (SPA engine) or all bins below the
+    #13 Angstrom PAH cutoff (Draine-template engine).  The ISRF stage
+    #has already run, so the PAH luminosities themselves were computed
+    #with the full LTE dust model.
+    try:
+        if cfg.par.PAH_SPA:
+            n_pah_sizes = len(pah_spec.GRAIN_SIZES)
+        else:
+            n_pah_sizes = int(np.sum(
+                simulation_sizes.to(u.angstrom).value <= 13.))
+        for ibin in range(n_pah_sizes):
+            emis = m.dust[ibin].emissivities
+            jnu_parked = np.zeros_like(emis.jnu)
+            jnu_parked[0:2, :] = 1.0   # the two lowest-nu rows of (n_nu, n_var)
+            emis.jnu = jnu_parked
+        print("[pah/pah_source_create]: suppressed the LTE emissivities of "
+              "the first %d (PAH-size) dust bins for the final RT stage "
+              "(emission parked at the long-wavelength edge of the "
+              "emissivity grid) so their emission at all science "
+              "wavelengths comes only from the PAH point sources"
+              % n_pah_sizes)
+    except Exception as e:
+        print("[pah/pah_source_create]: WARNING: could not suppress the "
+              "PAH-bin emissivities (%r); the final RT will double count "
+              "the PAH grain emission (LTE thermal + PAH point sources)"
+              % (e,))

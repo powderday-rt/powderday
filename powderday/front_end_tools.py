@@ -23,6 +23,9 @@ def make_SED(m, par, model):
 
             idx = np.where((monochromatic_lam > cfg.par.SED_MONOCHROMATIC_min_lam) & (
                         monochromatic_lam < cfg.par.SED_MONOCHROMATIC_max_lam))[0]
+            _nlam = getattr(cfg.par, "SED_MONOCHROMATIC_nlam", 0)
+            if _nlam and len(idx) > int(_nlam):
+                idx = idx[np.round(np.linspace(0, len(idx) - 1, int(_nlam))).astype(int)]
             monochromatic_lam = np.take(monochromatic_lam, list(idx))
         m.set_monochromatic(True, wavelengths=monochromatic_lam)
         m.set_raytracing(True)

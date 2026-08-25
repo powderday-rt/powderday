@@ -133,6 +133,48 @@ def extinction_law(x,dsf,wlen,cfrac,t_Qext,t_Qext_V):
 	return A, R, Qext
 
 
+#Li & Draine (2001) two-composition opacities. : the carbonaceous component is evaluated at
+#every grain size from the same Draine et al. (2021) cross sections the
+#PAH emission model.  PAH-like at small sizes, blending smoothly
+#into graphite at large sizes, with the Hensley & Draine (2023) ionized
+#fraction .  this allows the radiative transfer and the PAH emission to use 
+#identical grains at every size. Silicate absorption and all scattering
+#come from the Mie tables (Laor & Draine 1993 optical constants, the
+#same Draine-family lineage). Outside the wavelength range of the
+#carbonaceous cross-section data the mixed Mie values are retained.
+CFRAC = 0.54                           # carbonaceous mass fraction (diagnostic co-add only)
+N_SPECIES = 2                          # per size bin: graphite, silicate
+SPECIES_ORDER = ('graphite', 'silicate')   # flat index = i_size*N_SPECIES + i_species
+_CARB_XSEC_RANGE_UM = (0.0912, 1000.)  # validity of the carbonaceous data
+_PS = []
+
+
+def _f_ion(a_um):
+    """Hensley & Draine (2023) standard ionized PAH fraction vs size."""
+    a_h = 10.e-4   # 10 Angstrom in micron
+    return 1. - 1. / (1. + a_um / a_h)
+
+
+def _carbonaceous_kappa_abs(grain_sizes_this_bin, dN, wlen, rho):
+    """dN-weighted carbonaceous absorption opacity per gram for one
+    size bin, from the Draine et al. (2021) cross sections with the
+    Hensley & Draine (2023) ionized fraction."""
+    import pah_spec
+    if not _PS:
+        _PS.append(pah_spec.PahSpec())
+    ps = _PS[0]
+    lam = wlen.to(u.micron)
+    kabs = np.zeros([len(grain_sizes_this_bin), len(lam)])
+    for j, loga in enumerate(grain_sizes_this_bin):
+        a = (10.**loga) * u.micron
+        ion_cabs, neu_cabs = ps.calc_c_abs(lam, a.to(u.AA))
+        fi = _f_ion(a.value)
+        cabs = (1. - fi) * neu_cabs[0] + fi * ion_cabs[0]
+        m_grain = (4. / 3.) * np.pi * a.to(u.cm)**3 * rho
+        kabs[j, :] = (cabs / m_grain).to(u.cm**2 / u.g).value
+    return np.sum(kabs * dN[:, np.newaxis], axis=0) / np.sum(dN)
+
+
 def dust_file_writer(nsizes):
 
 #if __name__ == "__main__":
@@ -171,13 +213,28 @@ def dust_file_writer(nsizes):
     nbins = nsizes
     
     #array that holds the left edge, right edge, and edges of bins in between.  we use this to set the left and right edge arrays
-    edges = np.linspace(np.min(x),np.max(x),nbins+1) 
+
+    #the hydro simulation reports grain counts at nsizes discrete
+    #sizes, so each dust file has to describe a bin *centred* on one of
+    #those sizes.  taking the edges as the midpoints between neighbouring
+    #simulation sizes gives bin i the range [x_i - dx/2, x_i + dx/2],
+    #which both centres the within-bin opacity average on the size the
+    #bin represents and makes the simulation-size to dust-file mapping
+    #one-to-one across the whole grain size range.
+    sim_sizes = np.linspace(cfg.par.otf_extinction_log_min_size,
+                            cfg.par.otf_extinction_log_max_size,nsizes)
+    if nsizes > 1:
+        dx = sim_sizes[1]-sim_sizes[0]
+    else:
+        dx = 1.
+    edges = np.linspace(sim_sizes[0]-dx/2.,sim_sizes[-1]+dx/2.,nbins+1)
     grain_size_left_edge_array = edges[0:-1]
     grain_size_right_edge_array = edges[1::]
 
     #grain_size_left_edge_array = np.linspace(np.min(x),np.max(x),nbins)
     #grain_size_right_edge_array = []
     outfile_filenames = []
+    species_of_file = []
 
     Aext_array = np.zeros([len(wlen.value),nbins])
 
@@ -232,23 +289,72 @@ def dust_file_writer(nsizes):
         #distribution.  we will assume MRN (dn/da = a^-3.5, so dn = a^-2.5)
 
         dN = 1400.*(10.**grain_sizes_this_bin)**(-2.5)
-        kappa_lambda = np.absolute(np.trapz(kappa_a_lambda,dN,axis=0)/np.sum(dN))
+        #dN-weighted mean of kappa(a) over the sizes sampled within the
+        #bin: sum(kappa * dN) / sum(dN). The weights and the opacities
+        #are evaluated at the same size samples, so this is the opacity
+        #per gram of an MRN-distributed population within the bin.
+        kappa_lambda = np.sum(kappa_a_lambda*dN[:,None],axis=0)/np.sum(dN)
 
-        lam_micron = (constants.c/nu).to(u.micron)
+        #per-species opacities.  here we write a pure-graphite and a
+        #pure silicate dust file for each size bin.  the per-cell,
+        #per-size carbonaceous fraction is then applied downstream through
+        #the density grid (tributary_dust_add), so a silicate-rich cell
+        #carries no bump and a carbon-rich cell a strong one, taken from
+        #the simulation's own grain populations.  carbonaceous absorption
+        #uses the Draine (2021)/Hensley-Draine (2023) cross sections where
+        #valid and the Mie graphite tables outside that range; silicate
+        #and all scattering come from the Mie tables.
+        a_cm_bin = ((10.**grain_sizes_this_bin)*u.micron).to(u.cm)
+        lamv = wlen.to(u.micron).value
+        in_range = ((lamv >= _CARB_XSEC_RANGE_UM[0])
+                    & (lamv <= _CARB_XSEC_RANGE_UM[1]))
+        t_Q_sil = Qext_get(grain_sizes_this_bin, wlen.value, 0.0, xtab, Qtab)
+        t_Q_gra = Qext_get(grain_sizes_this_bin, wlen.value, 1.0, xtab, Qtab)
+        kabs_sil_a = np.zeros(t_Q_sil[0].shape)
+        ksca_sil_a = np.zeros(t_Q_sil[1].shape)
+        kabs_gra_a = np.zeros(t_Q_gra[0].shape)
+        ksca_gra_a = np.zeros(t_Q_gra[1].shape)
+        for _i in range(kabs_sil_a.shape[1]):
+            kabs_sil_a[:,_i] = 3.*t_Q_sil[0][:,_i]/(4.*a_cm_bin*ASSUMED_DENSITY_OF_DUST)
+            ksca_sil_a[:,_i] = 3.*t_Q_sil[1][:,_i]/(4.*a_cm_bin*ASSUMED_DENSITY_OF_DUST)
+            kabs_gra_a[:,_i] = 3.*t_Q_gra[0][:,_i]/(4.*a_cm_bin*ASSUMED_DENSITY_OF_DUST)
+            ksca_gra_a[:,_i] = 3.*t_Q_gra[1][:,_i]/(4.*a_cm_bin*ASSUMED_DENSITY_OF_DUST)
+        kabs_sil = np.sum(kabs_sil_a*dN[:,None],axis=0)/np.sum(dN)
+        ksca_sil = np.sum(ksca_sil_a*dN[:,None],axis=0)/np.sum(dN)
+        kabs_gra_mie = np.sum(kabs_gra_a*dN[:,None],axis=0)/np.sum(dN)
+        ksca_gra = np.sum(ksca_gra_a*dN[:,None],axis=0)/np.sum(dN)
+        kabs_car = _carbonaceous_kappa_abs(grain_sizes_this_bin, dN, wlen,
+                                           ASSUMED_DENSITY_OF_DUST)
+
+        #assemble each pure species: chi = kappa_abs + kappa_sca, albedo
+        #= kappa_sca/chi.
+        kabs_gra = np.where(in_range, kabs_car, kabs_gra_mie)
+        chi_gra = kabs_gra + ksca_gra
+        albedo_gra = np.where(chi_gra > 0, ksca_gra/chi_gra, 0.)
+        chi_sil = kabs_sil + ksca_sil
+        albedo_sil = np.where(chi_sil > 0, ksca_sil/chi_sil, 0.)
+
+        #(Aext_array for the diagnostic co-add plot is already set above,
+        #before the inner loop clobbers the loop variable.)
 
         #----------------------------------
-        #create the HDF5 file for powderday
+        #write the two per-species HDF5 files for this size bin.
+        #flat index = i_size*N_SPECIES + i_species, species order
+        #(graphite, silicate) -- a C-order flatten of (n_sizes, n_species),
+        #matched exactly by frac_grid in tributary_dust_add and by the
+        #kappa read-back in isrf_decompose.
         #----------------------------------
-
-
-        d = IsotropicDust(nu.value,albedo,kappa_lambda)
-
         if not os.path.exists(cfg.model.PD_output_dir+'/dust_files/'):
             os.makedirs(cfg.model.PD_output_dir+'/dust_files/')
-        filename = cfg.model.PD_output_dir+'/dust_files/binned_dust_sizes.'+str(counter)+'.hdf5'
-        outfile_filenames.append(filename)
-
-        d.write(filename)
+        for i_species, (chi_sp, alb_sp) in enumerate(
+                ((chi_gra, albedo_gra), (chi_sil, albedo_sil))):
+            flat = counter*N_SPECIES + i_species
+            d = IsotropicDust(nu.value, alb_sp, chi_sp)
+            filename = (cfg.model.PD_output_dir
+                        + '/dust_files/binned_dust_sizes.'+str(flat)+'.hdf5')
+            outfile_filenames.append(filename)
+            species_of_file.append(SPECIES_ORDER[i_species])
+            d.write(filename)
 
 
 
@@ -262,7 +368,17 @@ def dust_file_writer(nsizes):
     z = np.asarray(outfile_filenames)
     #np.savetxt('dust_files/binned_dust_sizes.key',np.transpose([grain_size_left_edge_array[0:-1],grain_size_right_edge_array,np.asarray(outfile_filenames)]))
 
-    np.savez(cfg.model.PD_output_dir+'/dust_files/binned_dust_sizes.npz',grain_size_left_edge_array = grain_size_left_edge_array,grain_size_right_edge_array = grain_size_right_edge_array,outfile_filenames = outfile_filenames)
+    #outfile_filenames is now n_sizes*N_SPECIES long, flattened size-major
+    #(species order graphite, silicate).  n_sizes / n_species / species are
+    #stored so every reader reshapes the flat dust-type axis from one
+    #source of truth rather than assuming a count.
+    np.savez(cfg.model.PD_output_dir+'/dust_files/binned_dust_sizes.npz',
+             grain_size_left_edge_array = grain_size_left_edge_array,
+             grain_size_right_edge_array = grain_size_right_edge_array,
+             outfile_filenames = outfile_filenames,
+             species_of_file = np.asarray(species_of_file),
+             n_sizes = nbins, n_species = N_SPECIES,
+             species_order = np.asarray(SPECIES_ORDER))
 
 
 
