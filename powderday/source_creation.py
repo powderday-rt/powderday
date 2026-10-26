@@ -509,6 +509,8 @@ def BH_source_add(m,reg,df_nu,boost):
             (reg["bh","luminosity"][i].value > 0)):
 
                 agn_ids.append(i)
+        if len(agn_ids) == 0:
+            return
 
 
         print ('Number AGNs in the cutout with non zero luminositites: ', len(agn_ids))
